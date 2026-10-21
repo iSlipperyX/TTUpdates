@@ -1,0 +1,231 @@
+"""Settings dialog: scoring weights, posting defaults, AI, the optional official TikTok API, updates."""
+
+from __future__ import annotations
+
+import datetime as dt
+from dataclasses import fields
+from typing import Callable
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
+                               QWidget)
+
+from .. import updater
+from ..config import VERSION, Settings, Weights
+from ..scoring import PART_LABELS
+from .widgets import label
+
+
+def _combo(options: list[tuple[str, str]], current: str) -> QComboBox:
+    c = QComboBox()
+    for value, text in options:
+        c.addItem(text, value)
+    c.setCurrentIndex(max(0, c.findData(current)))
+    return c
+
+
+def _form(tab: QTabWidget, title: str, intro: str = "") -> QFormLayout:
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(16, 14, 16, 14)
+    if intro:
+        lay.addWidget(label(intro, "muted", wrap=True))
+    form = QFormLayout()
+    form.setLabelAlignment(Qt.AlignRight)
+    form.setVerticalSpacing(9)
+    lay.addLayout(form)
+    lay.addStretch(1)
+    tab.addTab(w, title)
+    return form
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings: Settings, parent=None, on_check_updates: Callable[[], None] | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setMinimumSize(620, 560)
+        self.s = settings
+        root = QVBoxLayout(self)
+        tabs = QTabWidget()
+        root.addWidget(tabs, 1)
+
+        # Scoring
+        f = _form(tabs, "Scoring", "How much each part counts toward a video's score. Only the relative sizes "
+                                   "matter. 'Clip finder' and 'AI rating' only count for videos that have them.")
+        self.weight_sliders: dict[str, QSlider] = {}
+        for fl in fields(Weights):
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(0, 100)
+            sl.setValue(int(round(getattr(settings.weights, fl.name) * 100)))
+            val = QLabel()
+            val.setFixedWidth(30)
+            sl.valueChanged.connect(lambda v, lab=val: lab.setText(str(v)))
+            val.setText(str(sl.value()))
+            row = QHBoxLayout()
+            row.addWidget(sl, 1)
+            row.addWidget(val)
+            f.addRow(PART_LABELS[fl.name], row)
+            self.weight_sliders[fl.name] = sl
+        self.min_len = QDoubleSpinBox(minimum=1, maximum=600, value=settings.ideal_min_len, suffix=" s", decimals=0)
+        self.max_len = QDoubleSpinBox(minimum=1, maximum=600, value=settings.ideal_max_len, suffix=" s", decimals=0)
+        lens = QHBoxLayout()
+        lens.addWidget(self.min_len)
+        lens.addWidget(label("to"))
+        lens.addWidget(self.max_len)
+        lens.addStretch(1)
+        f.addRow("Ideal length", lens)
+        self.lufs = QDoubleSpinBox(minimum=-30, maximum=-6, value=settings.target_lufs, suffix=" LUFS", decimals=0)
+        f.addRow("Target loudness", self.lufs)
+
+        # Posting
+        f = _form(tabs, "Posting")
+        self.method = _combo([("browser", "Browser: my TikTok login in Edge/Chrome (recommended)"),
+                              ("api", "Official TikTok API (needs a developer app)")], settings.upload_method)
+        f.addRow("Upload with", self.method)
+        self.channel = _combo([("msedge", "Microsoft Edge"), ("chrome", "Google Chrome")], settings.browser_channel)
+        f.addRow("Browser", self.channel)
+        self.show_browser = QCheckBox("Show the browser window while posting")
+        self.show_browser.setChecked(settings.show_browser)
+        self.show_browser.setToolTip("Recommended: TikTok is more likely to block hidden browsers, and you can solve a "
+                                     "captcha if one appears.")
+        f.addRow("", self.show_browser)
+        self.privacy = _combo([("public", "Everyone"), ("friends", "Friends"), ("private", "Only me")],
+                              settings.default_privacy)
+        f.addRow("Who can watch (default)", self.privacy)
+        self.comments = QCheckBox("Comments")
+        self.duet = QCheckBox("Duet")
+        self.stitch = QCheckBox("Stitch")
+        row = QHBoxLayout()
+        for cb, on in ((self.comments, settings.allow_comments), (self.duet, settings.allow_duet),
+                       (self.stitch, settings.allow_stitch)):
+            cb.setChecked(on)
+            row.addWidget(cb)
+        row.addStretch(1)
+        f.addRow("Allow", row)
+        self.ai_label = QCheckBox("Label posts as AI-generated content")
+        self.ai_label.setChecked(settings.ai_generated_label)
+        f.addRow("", self.ai_label)
+        self.template = QLineEdit(settings.caption_template)
+        self.template.setToolTip("{caption} = the caption, {hashtags} = the video's + default hashtags, {title} = the title")
+        f.addRow("Caption layout", self.template)
+        self.default_tags = QLineEdit(settings.default_hashtags)
+        self.default_tags.setPlaceholderText("#fyp #yourniche")
+        f.addRow("Always add hashtags", self.default_tags)
+        self.tray = QCheckBox("Closing the window keeps the app running in the system tray")
+        self.tray.setChecked(settings.minimize_to_tray)
+        f.addRow("", self.tray)
+        self.startup = QCheckBox("Start with Windows (in the tray) so autopilot keeps posting after a restart")
+        self.startup.setChecked(settings.start_with_windows)
+        f.addRow("", self.startup)
+
+        # AI
+        f = _form(tabs, "AI", "Optional. Claude watches frames from each clip, predicts how it will do on "
+                              "TikTok and writes a caption and hashtags. Uses your Anthropic API key "
+                              "(console.anthropic.com); each rating is one API call.")
+        self.ai_key = QLineEdit(settings.ai_api_key)
+        self.ai_key.setEchoMode(QLineEdit.Password)
+        self.ai_key.setPlaceholderText("sk-ant-…")
+        f.addRow("Anthropic API key", self.ai_key)
+        self.ai_model = _combo([("claude-opus-5-5", "Claude Opus 5.5 (best)"), ("claude-sonnet-5-5", "Claude Sonnet 5.5 (cheaper)"),
+                                ("claude-haiku-5-5", "Claude Haiku 5.5 (cheapest)")], settings.ai_model)
+        f.addRow("Model", self.ai_model)
+        self.niche = QLineEdit(settings.ai_niche)
+        self.niche.setPlaceholderText("e.g. podcast clips about business for 18-30 year olds")
+        f.addRow("Your niche / audience", self.niche)
+        self.tag_count = QSpinBox(minimum=0, maximum=10, value=settings.ai_hashtag_count)
+        f.addRow("Hashtags to suggest", self.tag_count)
+
+        # API
+        f = _form(tabs, "TikTok API", "Only needed if you choose 'Official TikTok API' above. Create an app at "
+                                      "developers.tiktok.com with Login Kit (Desktop) and Content Posting API, "
+                                      "add the redirect URI below, and paste its keys here. Until TikTok audits "
+                                      "your app it can only post 'Only me' videos to a private account.")
+        self.client_key = QLineEdit(settings.api_client_key)
+        f.addRow("Client key", self.client_key)
+        self.client_secret = QLineEdit(settings.api_client_secret)
+        self.client_secret.setEchoMode(QLineEdit.Password)
+        f.addRow("Client secret", self.client_secret)
+        self.port = QSpinBox(minimum=1024, maximum=65535, value=settings.api_redirect_port)
+        self.redirect = QLineEdit()
+        self.redirect.setReadOnly(True)
+        self.port.valueChanged.connect(lambda p: self.redirect.setText(f"http://localhost:{p}/callback/"))
+        self.redirect.setText(f"http://localhost:{settings.api_redirect_port}/callback/")
+        f.addRow("Local port", self.port)
+        f.addRow("Redirect URI", self.redirect)
+        self.post_mode = _combo([("direct", "Publish directly"),
+                                 ("inbox", "Send as a draft to my TikTok app (I finish posting on my phone)")],
+                                settings.api_post_mode)
+        f.addRow("Posting", self.post_mode)
+
+        # Updates
+        f = _form(tabs, "Updates", "New versions are published as releases on GitHub. Installing one replaces only "
+                                   "the app folder; your library, queue, settings and TikTok login are kept. If a new "
+                                   "version fails to start, the previous one is restored automatically.")
+        where = updater.install_dir()
+        f.addRow("This version", label(f"{VERSION}" + ("" if where else "  (running from source: updates open the "
+                                                                          "download page instead)")))
+        self.update_repo = QLineEdit(settings.update_repo)
+        self.update_repo.setPlaceholderText("owner/repository")
+        f.addRow("Update repository", self.update_repo)
+        self.auto_check = QCheckBox("Check for updates automatically")
+        self.auto_check.setChecked(settings.auto_check_updates)
+        f.addRow("", self.auto_check)
+        self.auto_install = QCheckBox("Install updates by myself when the app is in the tray and no post is due soon")
+        self.auto_install.setChecked(settings.auto_install_updates)
+        f.addRow("", self.auto_install)
+        last = updater.load_state().get("last_check")
+        check_row = QHBoxLayout()
+        check_btn = QPushButton("Check now")
+        check_btn.setEnabled(on_check_updates is not None)
+        if on_check_updates:
+            check_btn.clicked.connect(lambda: (self._apply_update_fields(), on_check_updates()))
+        check_row.addWidget(check_btn)
+        check_row.addWidget(label("Last checked " + (dt.datetime.fromtimestamp(last).strftime("%d %b %H:%M")
+                                                     if last else "never"), "muted"))
+        check_row.addStretch(1)
+        f.addRow("", check_row)
+        if settings.skipped_version:
+            unskip = QPushButton(f"Stop skipping {settings.skipped_version}")
+            unskip.clicked.connect(lambda: (setattr(settings, "skipped_version", ""), unskip.hide()))
+            f.addRow("", unskip)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def apply(self) -> None:
+        s = self.s
+        for name, sl in self.weight_sliders.items():
+            setattr(s.weights, name, sl.value() / 100)
+        s.ideal_min_len = min(self.min_len.value(), self.max_len.value())
+        s.ideal_max_len = max(self.min_len.value(), self.max_len.value())
+        s.target_lufs = self.lufs.value()
+        s.upload_method = self.method.currentData()
+        s.browser_channel = self.channel.currentData()
+        s.show_browser = self.show_browser.isChecked()
+        s.default_privacy = self.privacy.currentData()
+        s.allow_comments, s.allow_duet, s.allow_stitch = (self.comments.isChecked(), self.duet.isChecked(),
+                                                          self.stitch.isChecked())
+        s.ai_generated_label = self.ai_label.isChecked()
+        s.caption_template = self.template.text().strip() or "{caption} {hashtags}"
+        s.default_hashtags = self.default_tags.text().strip()
+        s.minimize_to_tray = self.tray.isChecked()
+        s.start_with_windows = self.startup.isChecked()
+        s.ai_api_key = self.ai_key.text().strip()
+        s.ai_enabled = bool(s.ai_api_key)
+        s.ai_model = self.ai_model.currentData()
+        s.ai_niche = self.niche.text().strip()
+        s.ai_hashtag_count = self.tag_count.value()
+        s.api_client_key = self.client_key.text().strip()
+        s.api_client_secret = self.client_secret.text().strip()
+        s.api_redirect_port = self.port.value()
+        s.api_post_mode = self.post_mode.currentData()
+        self._apply_update_fields()
+
+    def _apply_update_fields(self) -> None:
+        s = self.s
+        s.update_repo = self.update_repo.text().strip().strip("/") or Settings().update_repo
+        s.auto_check_updates = self.auto_check.isChecked()
+        s.auto_install_updates = self.auto_install.isChecked()

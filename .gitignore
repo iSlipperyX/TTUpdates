@@ -1,0 +1,17 @@
+# Build output (published as release assets, not committed)
+dist/
+build/
+packaging/version_info.txt
+packaging/*.ico
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local data (the app keeps user data in %APPDATA%/%LOCALAPPDATA%, never here)
+*.log
+.env
