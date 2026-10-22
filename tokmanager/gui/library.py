@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLineEdit, QMenu,
                                QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
                                QTableWidgetSelectionRange, QVBoxLayout, QWidget)
@@ -18,7 +18,8 @@ from ..store import VideoItem
 from . import theme
 from .editor import PostEditor
 from .state import AppState, Job
-from .widgets import ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, fmt_dur, label, panel, thumb_pixmap
+from .widgets import (ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, account_badge, fmt_dur, label, panel,
+                      thumb_pixmap)
 
 ID_ROLE = Qt.UserRole + 1
 COLS = ["", "Video", "Score", "Length", "Format", "Status", "Added"]
@@ -73,7 +74,7 @@ class LibraryPage(QWidget):
         self.ai_btn.setToolTip("Claude rates the selected videos and writes captions (needs an API key)")
         self.ai_btn.clicked.connect(self.ai_selected)
         self.queue_btn = QPushButton("Add to queue →")
-        self.queue_btn.clicked.connect(self.queue_selected)
+        self.queue_btn.clicked.connect(lambda: self.queue_selected())
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.setObjectName("danger")
         self.remove_btn.setToolTip("Remove from the library (the files on disk are not touched)")
@@ -84,9 +85,7 @@ class LibraryPage(QWidget):
         self.search.setFixedWidth(200)
         self.search.textChanged.connect(self.refresh)
         self.filter = QComboBox()
-        for key, text in (("all", "All videos"), ("new", "Not queued"), ("queued", "Queued"), ("posted", "Posted"),
-                          ("failed", "Failed"), ("unscored", "Not scored")):
-            self.filter.addItem(text, key)
+        self._fill_filter()
         self.filter.currentIndexChanged.connect(self.refresh)
         for w in (add_files, add_folder, self.score_btn, self.ai_btn, self.queue_btn, self.remove_btn):
             bar.addWidget(w)
@@ -137,7 +136,29 @@ class LibraryPage(QWidget):
 
         self.state.library_changed.connect(self.refresh)
         self.state.jobs_changed.connect(self._update_buttons)
+        self.state.account_changed.connect(self._accounts_changed)
+        self.state.account_switched.connect(self._accounts_changed)
         self.refresh()
+
+    def _fill_filter(self) -> None:
+        """Status filters, plus one per account (its queue and posts) when there's more than one."""
+        current = self.filter.currentData()
+        self.filter.blockSignals(True)
+        self.filter.clear()
+        for key, text in (("all", "All videos"), ("new", "Not queued"), ("queued", "Queued"), ("posted", "Posted"),
+                          ("failed", "Failed"), ("unscored", "Not scored")):
+            self.filter.addItem(text, key)
+        if len(self.state.accounts) > 1:
+            self.filter.insertSeparator(self.filter.count())
+            for a in self.state.accounts:
+                self.filter.addItem(QIcon(account_badge(a.id, a.label, 18)), a.label, f"account:{a.id}")
+        self.filter.setCurrentIndex(max(0, self.filter.findData(current)))
+        self.filter.blockSignals(False)
+
+    def _accounts_changed(self) -> None:
+        self._fill_filter()
+        self.refresh()
+        self.editor.set_item(self.editor.item)  # "Will post as…" uses the account's default hashtags
 
     # --- detail panel -------------------------------------------------------------
 
@@ -188,7 +209,7 @@ class LibraryPage(QWidget):
         lay.addWidget(self.editor)
         self.d_queue = QPushButton("Add to queue →")
         self.d_queue.setObjectName("primary")
-        self.d_queue.clicked.connect(self.queue_selected)
+        self.d_queue.clicked.connect(lambda: self.queue_selected())
         lay.addWidget(self.d_queue)
         lay.addStretch(1)
         scroll.setWidget(box)
@@ -216,7 +237,7 @@ class LibraryPage(QWidget):
             size = item.info.get("size_bytes") or 0
             if size:
                 facts.append(f"{size / 1e6:.1f} MB")
-        facts.append(STATUS_TEXT.get(item.status, item.status))
+        facts.append(self._status_text(item))
         if item.source_reason:
             facts.append(f"Clip finder: “{item.source_reason}”")
         if not item.exists():
@@ -241,7 +262,10 @@ class LibraryPage(QWidget):
         for it in self.state.store.all():
             if f == "unscored" and it.score:
                 continue
-            if f not in ("all", "unscored") and it.status != f:
+            if f.startswith("account:"):
+                if it.account != f[8:]:
+                    continue
+            elif f not in ("all", "unscored") and it.status != f:
                 continue
             if q and q not in it.name.lower() and q not in it.caption.lower() and q not in it.path.lower():
                 continue
@@ -271,7 +295,7 @@ class LibraryPage(QWidget):
                 score.setText("scoring…" if self._is_scoring(it.id) else "—")
             length = SortItem(fmt_dur(it.duration) if it.duration else "—", it.duration)
             fmt = SortItem(format_label(it.info), it.info.get("width", 0) / max(1, it.info.get("height", 1)) if it.info else 9)
-            status = SortItem(STATUS_TEXT.get(it.status, it.status), it.status)
+            status = SortItem(self._status_text(it), it.status)
             status.setForeground(QColor(theme.STATUS_COLOURS.get(it.status, theme.MUTED)))
             if it.status == "failed" and it.last_error:
                 status.setToolTip(it.last_error)
@@ -290,6 +314,13 @@ class LibraryPage(QWidget):
         self.table.setVisible(has or bool(self.state.store.items))
         self.empty.setVisible(not self.state.store.items)
         self._selection_changed()
+
+    def _status_text(self, it: VideoItem) -> str:
+        """'Queued' or, with several accounts, 'Queued · @name' so you can see whose queue it's in."""
+        text = STATUS_TEXT.get(it.status, it.status)
+        if it.account and it.status != "new" and len(self.state.accounts) > 1:
+            text += f" · {self.state.accounts.label_for(it.account)}"
+        return text
 
     def _is_scoring(self, item_id: str) -> bool:
         return any(j.kind == "analyze" and getattr(j, "item_id", None) == item_id for j in self.state.jobs)
@@ -321,6 +352,12 @@ class LibraryPage(QWidget):
     def _update_buttons(self) -> None:
         ids = self.selected_ids()
         self.queue_btn.setEnabled(any(self.state.store.get(i) and self.state.store.get(i).status == "new" for i in ids))
+        target = self.state.active
+        multi = len(self.state.accounts) > 1
+        for b in (self.queue_btn, self.d_queue):
+            b.setText(f"Queue for {target.label} →" if multi else "Add to queue →")
+            b.setToolTip(f"Add to the end of {target.label}'s queue. Right-click a video to pick another account."
+                         if multi else "Add to the end of the queue")
         self.remove_btn.setEnabled(bool(ids))
         self.ai_btn.setEnabled(bool(ids))
 
@@ -332,7 +369,21 @@ class LibraryPage(QWidget):
         m.addAction("Play", self.open_file)
         m.addAction("Show in folder", self.show_in_folder)
         m.addSeparator()
-        m.addAction("Add to queue", self.queue_selected)
+        items = [self.state.store.get(i) for i in ids]
+        if len(self.state.accounts) > 1:
+            fresh = any(it and it.status == "new" for it in items)
+            posted = [it.id for it in items if it and it.status == "posted"]
+            queue_for = m.addMenu("Add to the queue of")
+            queue_for.setEnabled(fresh)
+            also = m.addMenu("Also post to")
+            also.setToolTip("Queues a copy for another account; the posted entry stays as it is")
+            also.setEnabled(bool(posted))
+            for a in self.state.accounts:
+                icon = QIcon(account_badge(a.id, a.label, 18))
+                queue_for.addAction(icon, a.label, lambda i=a.id: self.queue_selected(i))
+                also.addAction(icon, a.label, lambda i=a.id, p=posted: self.copy_to(p, i))
+        else:
+            m.addAction("Add to queue", self.queue_selected)
         m.addAction("Re-score", lambda: self.score(ids, force=True))
         m.addAction("AI rate", self.ai_selected)
         m.addSeparator()
@@ -398,16 +449,28 @@ class LibraryPage(QWidget):
             return
         for item_id in ids:
             item = self.state.store.get(item_id)
-            job = Job(f"AI rating {item.name}", lambda j, i=item_id: ai_item(self.state.store, i, s, j.log), kind="ai")
+            job = Job(f"AI rating {item.name}", lambda j, i=item_id, a=self.state.account_for(item):
+                      ai_item(self.state.store, i, s, j.log, account=a), kind="ai")
             self.state.run(job, on_success=lambda _it: self.state.library_changed.emit())
 
-    def queue_selected(self) -> None:
+    def queue_selected(self, account_id: str = "") -> None:
+        """Add the selected unqueued videos to an account's queue (the shown account's by default)."""
+        account = self.state.accounts.get(account_id) or self.state.active
         ids = [i for i in self.selected_ids() if self.state.store.get(i).status == "new"]
         if not ids:
             return
-        self.state.store.enqueue(ids)
+        self.state.store.enqueue(ids, account.id)
         self.state.save_soon()
-        self.state.log(f"Queued {len(ids)} video{'s' * (len(ids) != 1)}.")
+        where = f" for {account.label}" if len(self.state.accounts) > 1 else ""
+        self.state.log(f"Queued {len(ids)} video{'s' * (len(ids) != 1)}{where}.")
+        self.state.library_changed.emit()
+
+    def copy_to(self, ids: list[str], account_id: str) -> None:
+        for i in ids:
+            self.state.store.copy_for(i, account_id)
+        self.state.save_soon()
+        self.state.log(f"Queued {len(ids)} posted video{'s' * (len(ids) != 1)} for "
+                       f"{self.state.accounts.label_for(account_id)} as well.")
         self.state.library_changed.emit()
 
     def remove_selected(self) -> None:

@@ -125,14 +125,14 @@ def test_store_queue_order_and_persistence(tmp_path):
     assert len(added) == 3
     assert st.add_paths([vids]) == []  # no duplicates
     ids = [i.id for i in added]
-    st.enqueue(ids)
+    st.enqueue(ids, "acct")
     st.set_order([ids[2], ids[0], ids[1]])
     st.dequeue([ids[0]])
-    assert [i.id for i in st.queue()] == [ids[2], ids[1]]
+    assert [i.id for i in st.queue("acct")] == [ids[2], ids[1]]
     st.save()
     again = Store(tmp_path / "lib.json")
-    assert [i.id for i in again.queue()] == [ids[2], ids[1]]
-    assert again.get(ids[0]).status == "new"
+    assert [i.id for i in again.queue("acct")] == [ids[2], ids[1]]
+    assert again.get(ids[0]).status == "new" and again.get(ids[0]).account == ""
 
 
 def test_clipmonster_index_is_read(tmp_path):
@@ -151,9 +151,9 @@ def test_clipmonster_index_is_read(tmp_path):
 def test_posted_items_link_to_account_videos(tmp_path):
     st = Store(tmp_path / "lib.json")
     it = item("x", caption="This changed everything")
-    it.status, it.posted_at = "posted", ts(2026, 10, 20, 12)
+    it.status, it.posted_at, it.account = "posted", ts(2026, 10, 20, 12), "acct"
     st.items[it.id] = it
-    st.update_tiktok_videos([
+    st.update_tiktok_videos("acct", [
         TikTokVideo(id="1", description="Something else", create_time=ts(2026, 10, 20, 12, 1)),
         TikTokVideo(id="2", description="This changed everything #fyp", create_time=ts(2026, 10, 20, 12, 2)),
     ])

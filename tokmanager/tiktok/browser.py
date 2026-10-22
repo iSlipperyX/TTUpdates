@@ -2,6 +2,7 @@
 
 You log in yourself once in the window this opens (the app never sees your password);
 the login is kept in the app's own browser profile for later uploads and stat refreshes.
+Every account has its own profile folder, so each one stays logged in to its own TikTok.
 
 TikTok changes its web pages often, so every step has several selectors to try and the
 fragile extras (privacy, comment/duet/stitch switches) are best-effort: if one can't be
@@ -16,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from ..config import Settings, browser_profile_dir, cache_dir
+from ..config import Settings, cache_dir
 from ..store import Profile, TikTokVideo
 
 UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en"
@@ -44,9 +45,10 @@ class BrowserError(RuntimeError):
 class TikTokBrowser:
     """Context manager around one Playwright persistent-profile browser window."""
 
-    def __init__(self, settings: Settings, log: Log = print, headless: bool | None = None,
+    def __init__(self, settings: Settings, profile_dir: Path, log: Log = print, headless: bool | None = None,
                  cancelled: Callable[[], bool] = lambda: False):
         self.s = settings
+        self.profile_dir = profile_dir
         self.log = log
         self.headless = (not settings.show_browser) if headless is None else headless
         self.cancelled = cancelled
@@ -64,7 +66,7 @@ class TikTokBrowser:
                 "--no-first-run", "--no-default-browser-check"]
         try:
             self.ctx = self._pw.chromium.launch_persistent_context(
-                str(browser_profile_dir()), channel=self.s.browser_channel or "msedge",
+                str(self.profile_dir), channel=self.s.browser_channel or "msedge",
                 headless=self.headless, args=args, ignore_default_args=["--enable-automation"],
                 viewport={"width": 1280, "height": 900}, locale="en-US",
             )
@@ -72,7 +74,7 @@ class TikTokBrowser:
             self._pw.stop()
             msg = str(exc)
             if "ProcessSingleton" in msg or "user data directory is already in use" in msg.lower():
-                raise BrowserError("The TikTok browser window is already open. Close it and try again.") from exc
+                raise BrowserError("This account's TikTok browser window is already open. Close it and try again.") from exc
             if "Executable doesn't exist" in msg or "is not found" in msg:
                 raise BrowserError(f"Couldn't find {self.s.browser_channel}. Pick another browser in Settings.") from exc
             raise
@@ -396,11 +398,26 @@ class TikTokBrowser:
         except Exception as exc:
             self.log(f"⚠ Couldn't set '{label}' ({exc.__class__.__name__}).")
 
+    def check_user(self, expected: str) -> None:
+        """Refuse to post if this profile is logged in to a different TikTok account than expected."""
+        expected = expected.lstrip("@").strip().lower()
+        if not expected:
+            return
+        actual = self.whoami()
+        if not actual:
+            self.log("⚠ Couldn't confirm which TikTok account this browser is logged in to; posting anyway.")
+        elif actual.lower() != expected:
+            raise BrowserError(f"This account's browser is logged in to TikTok as @{actual}, not @{expected}. "
+                               "Log in again on the Account page (or change the account's @username).")
+
     def upload(self, video: Path, caption: str, privacy: str, allow_comments: bool = True,
                allow_duet: bool = True, allow_stitch: bool = True, ai_label: bool = False,
-               progress: Callable[[str], None] | None = None) -> None:
+               progress: Callable[[str], None] | None = None, expected_user: str = "") -> None:
         step = progress or self.log
         self.require_login()
+        if expected_user:
+            step("Checking which TikTok account is logged in…")
+            self.check_user(expected_user)
         step("Opening TikTok Studio…")
         self.page.goto(UPLOAD_URL, wait_until="domcontentloaded")
         self._sleep(2)

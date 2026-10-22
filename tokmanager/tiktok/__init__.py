@@ -1,4 +1,7 @@
-"""One front door for posting and account refreshes, whichever method is set in Settings."""
+"""One front door for posting and account refreshes, whichever method is set in Settings.
+
+`s` is the account's own settings (Account.apply), so captions use that account's default hashtags
+and privacy; `account` says whose browser profile or API tokens to use."""
 
 from __future__ import annotations
 
@@ -6,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from ..accounts import Account
 from ..config import Settings
 from ..store import Profile, TikTokVideo, VideoItem
 
@@ -38,7 +42,7 @@ def compose_caption(item: VideoItem, s: Settings) -> str:
     return text[:MAX_CAPTION]
 
 
-def post(item: VideoItem, s: Settings, log: Callable[[str], None], cancelled: Callable[[], bool],
+def post(item: VideoItem, s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
          progress: Callable[[str], None] | None = None) -> dict:
     """Post one queued item. Returns {'publish_id', 'tiktok_id'} where known."""
     path = Path(item.path)
@@ -49,32 +53,33 @@ def post(item: VideoItem, s: Settings, log: Callable[[str], None], cancelled: Ca
     if s.upload_method == "api":
         from .api import TikTokAPI
 
-        status = TikTokAPI(s, log).post(
+        status = TikTokAPI(s, account.tokens_path(), log).post(
             path, caption, privacy, s.allow_comments, s.allow_duet, s.allow_stitch, s.ai_generated_label,
-            inbox=s.api_post_mode == "inbox", progress=progress, cancelled=cancelled)
+            inbox=s.api_post_mode == "inbox", progress=progress, cancelled=cancelled, expected_user=account.username)
         ids = status.get("publicaly_available_post_id") or []
         return {"publish_id": status.get("publish_id", ""), "tiktok_id": str(ids[0]) if ids else ""}
 
     from .browser import TikTokBrowser
 
-    with TikTokBrowser(s, log, cancelled=cancelled) as b:
+    with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
         b.upload(path, caption, privacy, s.allow_comments, s.allow_duet, s.allow_stitch,
-                 s.ai_generated_label, progress=progress)
+                 s.ai_generated_label, progress=progress, expected_user=account.username)
     return {}
 
 
-def refresh_account(s: Settings, username: str, log: Callable[[str], None],
+def refresh_account(s: Settings, account: Account, log: Callable[[str], None],
                     cancelled: Callable[[], bool]) -> tuple[Profile, list[TikTokVideo]]:
+    username = account.username
     if s.upload_method == "api":
         from .api import TikTokAPI
 
-        api = TikTokAPI(s, log)
+        api = TikTokAPI(s, account.tokens_path(), log)
         profile = api.profile()
         return profile, api.videos(username=profile.username)
 
     from .browser import TikTokBrowser
 
-    with TikTokBrowser(s, log, cancelled=cancelled) as b:
+    with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
         if not username:  # public profiles can be read logged out; finding "me" needs the login
             b.require_login()
         return b.fetch_account(username)

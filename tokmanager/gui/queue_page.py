@@ -1,22 +1,22 @@
-"""Queue page: put videos in posting order (drag & drop), set the schedule, post now or on autopilot."""
+"""Queue page: the shown account's posting order (drag & drop), its schedule, post now or on autopilot."""
 
 from __future__ import annotations
 
 import time
 
 from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTime, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDateTimeEdit, QGridLayout, QHBoxLayout,
-                               QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSpinBox,
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDateTimeEdit, QGridLayout, QHBoxLayout, QLabel,
+                               QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QStyle, QStyledItemDelegate, QTimeEdit, QVBoxLayout, QWidget)
 
-from .. import schedule
+from .. import jobs, schedule
 from ..scoring import grade
 from ..store import VideoItem
 from . import theme
 from .editor import PostEditor
 from .state import AppState
-from .widgets import fmt_dur, label, panel, thumb_pixmap
+from .widgets import account_badge, fmt_dur, label, panel, thumb_pixmap
 
 ID_ROLE = Qt.UserRole + 1
 
@@ -119,6 +119,8 @@ class QueuePage(QWidget):
         root.setSpacing(10)
 
         bar = QHBoxLayout()
+        self.badge = QLabel()
+        bar.addWidget(self.badge)
         self.summary = label("", "h2")
         bar.addWidget(self.summary)
         bar.addStretch(1)
@@ -147,8 +149,10 @@ class QueuePage(QWidget):
         self.list.setSpacing(1)
         self.list.reordered.connect(self._dropped)
         self.list.itemSelectionChanged.connect(self._selection_changed)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
         ll.addWidget(self.list, 1)
-        self.empty = label("The queue is empty.\nSelect videos in the Library and click “Add to queue”.", "muted")
+        self.empty = label("", "muted")
         self.empty.setAlignment(Qt.AlignCenter)
         ll.addWidget(self.empty, 1)
         moves = QHBoxLayout()
@@ -181,6 +185,9 @@ class QueuePage(QWidget):
 
         self.state.library_changed.connect(self.refresh)
         self.state.jobs_changed.connect(self._update_buttons)
+        self.state.account_switched.connect(self._account_switched)
+        self.state.account_changed.connect(self._load_schedule)
+        self._load_schedule()
         self.refresh()
 
     # --- side panel ---------------------------------------------------------------
@@ -197,14 +204,14 @@ class QueuePage(QWidget):
         sched = panel()
         sl = QVBoxLayout(sched)
         sl.setContentsMargins(14, 12, 14, 12)
-        sl.addWidget(label("Schedule", "h2"))
-        s = self.state.settings
-        self.per_day = QSpinBox(minimum=1, maximum=24, value=s.posts_per_day)
-        self.first = QTimeEdit(QTime.fromString(s.first_post_time, "HH:mm"))
-        self.last = QTimeEdit(QTime.fromString(s.last_post_time, "HH:mm"))
+        self.sched_title = label("Schedule", "h2")
+        sl.addWidget(self.sched_title)
+        self.per_day = QSpinBox(minimum=1, maximum=24)
+        self.first = QTimeEdit()
+        self.last = QTimeEdit()
         for t in (self.first, self.last):
             t.setDisplayFormat("HH:mm")
-        self.gap = QSpinBox(minimum=0, maximum=24 * 60, singleStep=15, value=s.min_gap_minutes, suffix=" min")
+        self.gap = QSpinBox(minimum=0, maximum=24 * 60, singleStep=15, suffix=" min")
         grid = QGridLayout()
         grid.addWidget(label("Posts per day"), 0, 0)
         grid.addWidget(self.per_day, 0, 1)
@@ -218,9 +225,9 @@ class QueuePage(QWidget):
         self.slots = label("", "muted", wrap=True)
         sl.addWidget(self.slots)
         self.autopilot = QCheckBox("Autopilot: post automatically at these times")
-        self.autopilot.setChecked(s.autopilot)
         self.autopilot.setToolTip("Keep TikTok Manager running (it can sit in the system tray) and it posts each "
-                                  "video when its time comes.")
+                                  "video when its time comes. Every account has its own switch; the tray menu "
+                                  "lists them all.")
         sl.addWidget(self.autopilot)
         self.next_label = label("", wrap=True)
         sl.addWidget(self.next_label)
@@ -264,18 +271,37 @@ class QueuePage(QWidget):
 
     # --- data ---------------------------------------------------------------------
 
+    def _load_schedule(self) -> None:
+        """Show the shown account's schedule and autopilot switch (without saving them back)."""
+        a = self.state.active
+        widgets = (self.per_day, self.gap, self.first, self.last, self.autopilot)
+        for w in widgets:
+            w.blockSignals(True)
+        self.per_day.setValue(a.posts_per_day)
+        self.gap.setValue(a.min_gap_minutes)
+        self.first.setTime(QTime.fromString(a.first_post_time, "HH:mm"))
+        self.last.setTime(QTime.fromString(a.last_post_time, "HH:mm"))
+        self.autopilot.setChecked(a.autopilot)
+        for w in widgets:
+            w.blockSignals(False)
+        multi = len(self.state.accounts) > 1
+        self.sched_title.setText(f"Schedule for {a.label}" if multi else "Schedule")
+        self._update_next()
+        self.editor.set_item(self.editor.item)  # the account's default hashtags / privacy may have changed
+
+    def _account_switched(self) -> None:
+        self.list.clearSelection()
+        self._load_schedule()
+        self.refresh()
+
     def replan(self) -> None:
-        q = self.state.store.queue()
-        planned = schedule.plan([i for i in q if i.status == "queued"], self.state.settings, time.time(),
-                                self.state.store.last_post_time())
-        with self.state.store.lock:
-            for it in q:
-                it.planned_at = planned.get(it.id)
+        self.state.replan()
 
     def refresh(self) -> None:
         self.replan()
+        a = self.state.active
         selected = set(self.selected_ids())
-        q = self.state.store.queue()
+        q = self.state.store.queue(a.id)
         self.list.blockSignals(True)
         self.list.clear()
         for it in q:
@@ -288,35 +314,45 @@ class QueuePage(QWidget):
         self.list.blockSignals(False)
         self.list.setVisible(bool(q))
         self.empty.setVisible(not q)
+        multi = len(self.state.accounts) > 1
+        self.badge.setVisible(multi)
+        self.badge.setPixmap(account_badge(a.id, a.label, 24))
+        self.empty.setText((f"Nothing is queued for {a.label} yet." if multi else "The queue is empty.") +
+                           "\nSelect videos in the Library and click “" + ("Queue for…" if multi else "Add to queue") + "”.")
         queued = [i for i in q if i.status == "queued"]
         failed = sum(1 for i in q if i.status == "failed")
         days = 0.0
         if queued and queued[-1].planned_at:
             days = (queued[-1].planned_at - time.time()) / 86400
-        txt = f"{len(q)} in the queue"
+        txt = f"{a.label}: " if multi else ""
+        txt += f"{len(q)} in the queue"
         if queued:
             txt += f" · runs until {schedule.fmt_when(queued[-1].planned_at)}" + (f" ({days:.0f} days)" if days >= 2 else "")
         if failed:
             txt += f" · {failed} failed"
         self.summary.setText(txt)
-        self.slots.setText("Daily slots: " + ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(self.state.settings)))
+        self.slots.setText("Daily slots: " + ", ".join(t.strftime("%H:%M")
+                                                       for t in schedule.daily_slots(self.state.settings_for())))
         self._update_next()
         self._selection_changed()
 
     def _update_next(self) -> None:
-        q = [i for i in self.state.store.queue() if i.status == "queued" and i.planned_at]
+        a = self.state.active
+        q = [i for i in self.state.store.queue(a.id) if i.status == "queued" and i.planned_at]
         s = self.state.settings
-        if not q:
-            self.next_label.setText("")
-            return
-        nxt = q[0]
-        method = "your browser login" if s.upload_method == "browser" else "the TikTok API"
-        if s.autopilot:
-            self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.name)}</b> "
-                                    f"at {schedule.fmt_when(nxt.planned_at)} via {method}.")
-        else:
+        if not a.autopilot:
             self.next_label.setText(f"<span style='color:{theme.MUTED}'>○ Off.</span> Videos only post when you click "
                                     f"“Post selected now”.")
+        elif not jobs.can_autopost(a, s):
+            self.next_label.setText(f"<span style='color:{theme.WARN}'>● On, but {_esc(a.label)} isn't logged in.</span> "
+                                    "Log in on the Account page so autopilot can post.")
+        elif not q:
+            self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Nothing is queued.")
+        else:
+            nxt = q[0]
+            method = "your browser login" if s.upload_method == "browser" else "the TikTok API"
+            self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.name)}</b> "
+                                    f"at {schedule.fmt_when(nxt.planned_at)} via {method}.")
 
     def selected_ids(self) -> list[str]:
         return [li.data(ID_ROLE) for li in sorted(self.list.selectedItems(), key=self.list.row)]
@@ -358,7 +394,7 @@ class QueuePage(QWidget):
         self._commit_order(self._order())
 
     def _reorder(self, fn) -> None:
-        q = self.state.store.queue()
+        q = self.state.store.queue(self.state.active.id)
         self._commit_order([i.id for i in fn(q)])
 
     def move(self, delta: int) -> None:
@@ -419,25 +455,58 @@ class QueuePage(QWidget):
         if not ids:
             return
         names = "\n".join(f"• {self.state.store.get(i).name}" for i in ids[:8])
-        if QMessageBox.question(self, "Post now", f"Post {len(ids)} video(s) to TikTok now?\n\n{names}") != QMessageBox.Yes:
+        to = self.state.active.handle
+        if QMessageBox.question(self, "Post now", f"Post {len(ids)} video(s) to {to} now?\n\n{names}") != QMessageBox.Yes:
             return
         for i in ids:
             self.post_requested.emit(i)
 
     def _schedule_changed(self) -> None:
-        s = self.state.settings
-        s.posts_per_day = self.per_day.value()
-        s.min_gap_minutes = self.gap.value()
-        s.first_post_time = self.first.time().toString("HH:mm")
-        s.last_post_time = self.last.time().toString("HH:mm")
-        self.state.save_settings()
+        a = self.state.active
+        a.posts_per_day = self.per_day.value()
+        a.min_gap_minutes = self.gap.value()
+        a.first_post_time = self.first.time().toString("HH:mm")
+        a.last_post_time = self.last.time().toString("HH:mm")
+        self.state.save_accounts()
         self.refresh()
 
     def _autopilot_toggled(self, on: bool) -> None:
-        self.state.settings.autopilot = on
-        self.state.save_settings()
-        self.state.log("Autopilot on: queued videos will post at their scheduled times." if on else "Autopilot off.")
-        self._update_next()
+        self.state.set_autopilot(self.state.active.id, on)
+
+    def _menu(self, pos) -> None:
+        ids = self.selected_ids()
+        others = [a for a in self.state.accounts if a.id != self.state.active.id]
+        if not ids:
+            return
+        m = QMenu(self)
+        m.addAction("Post now", self.post_now).setEnabled(self.post_btn.isEnabled())
+        m.addAction("Remove from queue", self.remove).setEnabled(self.remove_btn.isEnabled())
+        if others:
+            move = m.addMenu("Move to another account's queue")
+            for a in others:
+                move.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label, lambda i=a.id: self.move_to_account(i))
+            move.setEnabled(self.remove_btn.isEnabled())
+            copy = m.addMenu("Also queue for")
+            for a in others:
+                copy.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label, lambda i=a.id: self.copy_to_account(i))
+        m.exec(self.list.viewport().mapToGlobal(pos))
+
+    def move_to_account(self, account_id: str) -> None:
+        ids = self.selected_ids()
+        self.state.store.move_to(ids, account_id)
+        self.state.save_soon()
+        self.state.log(f"Moved {len(ids)} video{'s' * (len(ids) != 1)} to "
+                       f"{self.state.accounts.label_for(account_id)}'s queue.")
+        self.state.library_changed.emit()
+
+    def copy_to_account(self, account_id: str) -> None:
+        ids = self.selected_ids()
+        for i in ids:
+            self.state.store.copy_for(i, account_id)
+        self.state.save_soon()
+        self.state.log(f"Queued {len(ids)} video{'s' * (len(ids) != 1)} for "
+                       f"{self.state.accounts.label_for(account_id)} as well.")
+        self.state.library_changed.emit()
 
 
 def _esc(t: str) -> str:

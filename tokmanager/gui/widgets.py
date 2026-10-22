@@ -231,6 +231,35 @@ class StatCard(QWidget):
         self.sub.setStyleSheet(f"font-size: 8.5pt; color: {sub_colour or theme.MUTED};")
 
 
+ACCOUNT_COLOURS = ("#F43F72", "#22D3EE", "#A78BFA", "#34D399", "#FBBF24", "#FB923C", "#60A5FA", "#F472B6")
+
+
+def account_colour(account_id: str) -> str:
+    """A steady colour per account, so it's easy to see at a glance which one you're looking at."""
+    return ACCOUNT_COLOURS[sum(map(ord, account_id or "")) % len(ACCOUNT_COLOURS)]
+
+
+@lru_cache(maxsize=64)
+def account_badge(account_id: str, text: str, size: int = 22) -> QPixmap:
+    """A coloured circle with the account's first letter."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(account_colour(account_id)))
+    p.drawEllipse(QRectF(0, 0, size, size))
+    letter = next((c for c in text if c.isalnum()), "?").upper()
+    f = QFont()
+    f.setBold(True)
+    f.setPixelSize(int(size * 0.5))
+    p.setFont(f)
+    p.setPen(QColor("#0F1117"))
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, letter)
+    p.end()
+    return pm
+
+
 def hbox(*widgets, spacing: int = 8, margins=(0, 0, 0, 0)) -> QHBoxLayout:
     lay = QHBoxLayout()
     lay.setSpacing(spacing)

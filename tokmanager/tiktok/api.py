@@ -21,7 +21,7 @@ from typing import Callable
 
 import requests
 
-from ..config import Settings, app_dir
+from ..config import Settings
 from ..store import Profile, TikTokVideo
 from ..vault import protect, unprotect
 
@@ -66,29 +66,26 @@ class Tokens:
     expires_at: float = 0.0
     refresh_expires_at: float = 0.0
 
-    @staticmethod
-    def path() -> Path:
-        return app_dir() / "tiktok_tokens.json"
-
     @classmethod
-    def load(cls) -> "Tokens":
+    def load(cls, path: Path) -> "Tokens":
         try:
-            d = json.loads(cls.path().read_text(encoding="utf-8"))
+            d = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cls()
         t = cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
         t.access_token, t.refresh_token = unprotect(t.access_token), unprotect(t.refresh_token)
         return t
 
-    def save(self) -> None:
+    def save(self, path: Path) -> None:
         d = asdict(self)
         d["access_token"], d["refresh_token"] = protect(self.access_token), protect(self.refresh_token)
-        self.path().write_text(json.dumps(d, indent=2), encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
-    @classmethod
-    def clear(cls) -> None:
+    @staticmethod
+    def clear(path: Path) -> None:
         try:
-            cls.path().unlink()
+            path.unlink()
         except OSError:
             pass
 
@@ -105,10 +102,13 @@ def _new_pkce() -> tuple[str, str]:
 
 
 class TikTokAPI:
-    def __init__(self, settings: Settings, log: Log = print):
+    """One connected TikTok account; its tokens are kept (encrypted) in `tokens_path`."""
+
+    def __init__(self, settings: Settings, tokens_path: Path, log: Log = print):
         self.s = settings
         self.log = log
-        self.tokens = Tokens.load()
+        self.tokens_path = tokens_path
+        self.tokens = Tokens.load(tokens_path)
         self.http = requests.Session()
 
     @property
@@ -155,7 +155,8 @@ class TikTokAPI:
             "code_challenge": challenge, "code_challenge_method": "S256",
         }
         webbrowser.open(AUTH_URL + "?" + urllib.parse.urlencode(params))
-        self.log("Approve TikTok Manager in the browser tab that just opened…")
+        self.log("Approve TikTok Manager in the browser tab that just opened. If that browser is logged in to a "
+                 "different TikTok account, switch accounts on TikTok's page first.")
         end = time.time() + timeout
         try:
             while not result and time.time() < end and not cancelled():
@@ -191,7 +192,7 @@ class TikTokAPI:
             expires_at=now + float(body.get("expires_in", 86400)) - 120,
             refresh_expires_at=now + float(body.get("refresh_expires_in", 31536000)),
         )
-        self.tokens.save()
+        self.tokens.save(self.tokens_path)
 
     def disconnect(self) -> None:
         if self.tokens.access_token and self.s.api_client_key:
@@ -201,7 +202,7 @@ class TikTokAPI:
                     "token": self.tokens.access_token})
             except requests.RequestException:
                 pass
-        Tokens.clear()
+        Tokens.clear(self.tokens_path)
         self.tokens = Tokens()
 
     @property
@@ -275,7 +276,7 @@ class TikTokAPI:
     def post(self, video: Path, caption: str, privacy: str, allow_comments: bool, allow_duet: bool,
              allow_stitch: bool, ai_label: bool, cover_ms: int = 1000, inbox: bool = False,
              progress: Callable[[str], None] | None = None,
-             cancelled: Callable[[], bool] = lambda: False) -> dict:
+             cancelled: Callable[[], bool] = lambda: False, expected_user: str = "") -> dict:
         """Upload and publish (or send to the TikTok app's inbox). Returns the final status payload."""
         step = progress or self.log
         size = video.stat().st_size
@@ -285,6 +286,9 @@ class TikTokAPI:
             data = self._call("POST", "/post/publish/inbox/video/init/", body={"source_info": source})
         else:
             info = self.creator_info()
+            actual, expected = info.get("creator_username") or "", expected_user.lstrip("@").strip()
+            if actual and expected and actual.lower() != expected.lower():
+                raise ApiError(f"These API tokens belong to @{actual}, not @{expected}. Connect the account again.")
             level = PRIVACY_MAP.get(privacy, "SELF_ONLY")
             options = info.get("privacy_level_options") or []
             if options and level not in options:

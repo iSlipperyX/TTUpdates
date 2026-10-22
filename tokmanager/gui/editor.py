@@ -82,7 +82,8 @@ class PostEditor(QWidget):
         self.hashtags.setText(item.hashtags if item else "")
         idx = max(0, self.privacy.findData(item.privacy if item else ""))
         self.privacy.setCurrentIndex(idx)
-        self.privacy.setItemText(0, f"Default ({dict(PRIVACY_CHOICES).get(self.state.settings.default_privacy, '')})")
+        default = self.state.account_for(item).default_privacy
+        self.privacy.setItemText(0, f"Default ({dict(PRIVACY_CHOICES).get(default, '')})")
         self._loading = False
         self._refresh_preview()
         self._show_ai()
@@ -115,10 +116,12 @@ class PostEditor(QWidget):
         tmp = replace(self.item)
         if from_fields:
             tmp.caption, tmp.hashtags = self.caption.toPlainText().strip(), self.hashtags.text()
-        text = compose_caption(tmp, self.state.settings)
+        account = self.state.account_for(self.item)
+        text = compose_caption(tmp, account.apply(self.state.settings))
         n = len(text)
         warn = f" <span style='color:{theme.BAD}'>(too long)</span>" if n >= MAX_CAPTION else ""
-        self.preview.setText(f"<b>Will post as:</b> {_html(text)}<br><span style='font-size:8pt'>{n}/{MAX_CAPTION}"
+        to = f" to {_html(account.label)}" if len(self.state.accounts) > 1 else ""
+        self.preview.setText(f"<b>Will post{to} as:</b> {_html(text)}<br><span style='font-size:8pt'>{n}/{MAX_CAPTION}"
                              f" characters</span>{warn}")
 
     def _show_ai(self) -> None:
@@ -157,7 +160,8 @@ class PostEditor(QWidget):
             if self.item and self.item.id == item_id:
                 self.set_item(self.item)
 
-        job = Job("AI rating", lambda j: ai_item(self.state.store, item_id, s, j.log), kind="ai")
+        account = self.state.account_for(self.item)
+        job = Job("AI rating", lambda j: ai_item(self.state.store, item_id, s, j.log, account=account), kind="ai")
         self.state.run(job, on_success=done, on_failure=done)
 
 

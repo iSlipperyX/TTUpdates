@@ -41,12 +41,6 @@ def updates_dir() -> Path:
     return path
 
 
-def browser_profile_dir() -> Path:
-    path = cache_dir() / "browser-profile"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 @dataclass
 class Weights:
     """How much each part of the score counts. Only relative sizes matter."""
@@ -74,7 +68,9 @@ class Settings:
     ai_model: str = "claude-opus-5-5"
     ai_niche: str = ""  # e.g. "podcast clips about startups", helps captions and scoring
     ai_hashtag_count: int = 4
-    # Posting
+    # Posting. default_privacy, default_hashtags, ai_niche, the schedule, autopilot and browser_logged_in
+    # are per account (accounts.Account); the values here only seed the first account when upgrading
+    # from 1.0, and Account.apply() overrides them on the copy each account's work runs with.
     upload_method: str = "browser"  # "browser" (your logged-in TikTok in Edge/Chrome) or "api"
     browser_channel: str = "msedge"  # msedge | chrome
     show_browser: bool = True
