@@ -35,8 +35,10 @@ def test_opens_a_plain_window_on_the_profile_and_waits_for_it_to_close(tmp_path)
     assert login.login_window(Settings(), profile, lines.append, browser=exe) is True
     args = (tmp_path / "args.txt").read_text(encoding="utf-8")
     assert f"--user-data-dir={profile}" in args and args.strip().endswith(login.LOGIN_URL)
-    assert "remote-debugging" not in args and "enable-automation" not in args  # nothing for TikTok to spot
-    assert "close that window" in lines[0]
+    # Only a DevTools port for reading cookies; no automation switches for TikTok to spot.
+    assert "--remote-debugging-port=0" in args
+    assert "enable-automation" not in args and "remote-debugging-pipe" not in args
+    assert "connects by itself" in lines[0]
 
 
 def test_cancel_closes_the_window(tmp_path):
@@ -72,3 +74,71 @@ def test_finds_edge_and_chrome_in_program_files(tmp_path, monkeypatch):
         p.write_bytes(b"")
     assert login.find_browser("msedge") == edge
     assert login.find_browser("chrome") == chrome
+
+
+CHROMIUM = os.environ.get("TOKMANAGER_TEST_CHROMIUM")
+
+
+def real_browser(tmp_path):
+    """The test Chromium, headless, standing in for Edge."""
+    exe = tmp_path / "msedge.exe"
+    exe.write_text(f"#!/bin/sh\nexec '{CHROMIUM}' --headless=new --no-sandbox \"$@\"\n", encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return exe
+
+
+def set_session_cookie(profile, delay):
+    """Log in from 'outside', as the person would: TikTok's session cookie appears in the jar."""
+    import threading
+
+    from tokmanager.tiktok import cdp
+
+    def run():
+        end = time.time() + 20
+        while time.time() < end:
+            ep = cdp.endpoint(profile)
+            if ep:
+                time.sleep(delay)
+                with cdp.CDP(*ep) as c:
+                    c.call("Storage.setCookies", {"cookies": [{
+                        "name": "sessionid", "value": "abc123", "domain": ".tiktok.com", "path": "/",
+                        "secure": True, "httpOnly": True, "expires": time.time() + 86400}]})
+                return
+            time.sleep(0.1)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t
+
+
+@pytest.mark.skipif(not CHROMIUM, reason="set TOKMANAGER_TEST_CHROMIUM to a Chromium binary")
+def test_notices_the_login_and_closes_the_window_by_itself(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    lines = []
+    set_session_cookie(profile, delay=1)
+    start = time.time()
+    assert login.login_window(Settings(), profile, lines.append, browser=real_browser(tmp_path),
+                              url="about:blank", timeout=60) is True
+    assert time.time() - start < 40
+    assert any("You're logged in" in line for line in lines)
+    assert not login.profile_in_use(profile)
+    # The cookie was written to the profile, where the automated browser will find it.
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        ctx = pw.chromium.launch_persistent_context(str(profile), executable_path=CHROMIUM, headless=True)
+        names = [c["name"] for c in ctx.cookies("https://www.tiktok.com")]
+        ctx.close()
+    assert "sessionid" in names
+
+
+@pytest.mark.skipif(not CHROMIUM, reason="set TOKMANAGER_TEST_CHROMIUM to a Chromium binary")
+def test_im_logged_in_button_closes_the_window(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    lines = []
+    start = time.time()
+    assert login.login_window(Settings(), profile, lines.append, browser=real_browser(tmp_path),
+                              url="about:blank", timeout=60, finish=lambda: time.time() - start > 2) is True
+    assert any("Closing the" in line for line in lines)

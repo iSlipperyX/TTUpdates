@@ -283,13 +283,16 @@ def launch_helper(new_app: Path, target: Path, new_version: str, tray: bool) -> 
         "-OldVersion", VERSION, "-NewVersion", new_version, "-Mode", "tray" if tray else "normal",
         "-MarkerTimeout", str(MARKER_TIMEOUT),
     ]
-    detached = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # Never DETACHED_PROCESS: Windows PowerShell 5.1 started without a console quits at once
+    # (exit code 0) without running the script. That's why updates up to 1.2.0 closed the app
+    # and installed nothing. CREATE_NO_WINDOW gives it a hidden console instead.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     try:
-        subprocess.Popen(args, creationflags=detached | breakaway, **kwargs)
+        subprocess.Popen(args, creationflags=flags | breakaway, **kwargs)
     except OSError:  # the parent job doesn't allow breakaway
-        subprocess.Popen(args, creationflags=detached, **kwargs)
+        subprocess.Popen(args, creationflags=flags, **kwargs)
 
 
 def mark_started() -> None:
@@ -395,7 +398,8 @@ try {
 
 # 3. Start the new version and wait for it to report that it came up.
 if (Test-Path -LiteralPath $Marker) { Remove-Item -LiteralPath $Marker -Force }
-Start-App @("--updated-from", $OldVersion)
+try { Start-App @("--updated-from", $OldVersion) }
+catch { Log "Couldn't start $NewVersion ($($_.Exception.Message))." }
 $deadline = (Get-Date).AddSeconds($MarkerTimeout)
 while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $Marker)) { Start-Sleep -Milliseconds 500 }
 if (Test-Path -LiteralPath $Marker) {
