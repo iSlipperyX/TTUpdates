@@ -1,7 +1,8 @@
 """Drive TikTok's own web uploader in your installed Edge/Chrome with a dedicated profile.
 
-You log in yourself once in the window this opens (the app never sees your password);
-the login is kept in the app's own browser profile for later uploads and stat refreshes.
+You log in yourself once, in a plain browser window on the same profile (login.py: TikTok
+refuses logins in an automated window). The app never sees your password; the login is kept
+in the app's own browser profile for later uploads and stat refreshes.
 Every account has its own profile folder, so each one stays logged in to its own TikTok.
 
 TikTok changes its web pages often, so every step has several selectors to try and the
@@ -110,7 +111,8 @@ class TikTokBrowser:
         return any(c["name"] in SESSION_COOKIES and c.get("value") for c in cookies)
 
     def login(self, timeout: float = 900) -> bool:
-        """Open TikTok's login page and wait until the user has logged in (or closed the window)."""
+        """Log in inside this automated window: only a fallback when no Edge/Chrome install is found
+        for login.login_window(), because TikTok often answers "Too many attempts" here."""
         if self.logged_in():
             self.log("Already logged in to TikTok.")
             return True
@@ -135,12 +137,10 @@ class TikTokBrowser:
         self.ctx.clear_cookies()
 
     def require_login(self) -> None:
-        if self.logged_in():
-            return
-        if self.headless:
+        # No logging in from here: TikTok refuses logins in this automated window ("Too many attempts").
+        # Account → Log in opens a plain browser window for it instead (login.py).
+        if not self.logged_in():
             raise BrowserError("Not logged in to TikTok. Use Account → Log in first.")
-        if not self.login():
-            raise BrowserError("Not logged in to TikTok.")
 
     # --- account ----------------------------------------------------------------
 

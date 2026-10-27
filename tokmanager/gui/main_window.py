@@ -409,10 +409,19 @@ class MainWindow(QMainWindow):
                 name = api.profile().username
             else:
                 from ..tiktok.browser import TikTokBrowser
+                from ..tiktok.login import login_window
 
-                with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
-                    if not b.login():
-                        raise RuntimeError("Login wasn't completed.")
+                # A plain browser window: TikTok refuses logins in an automated one ("Too many attempts").
+                if not login_window(s, a.browser_dir(), j.log, j.cancelled):
+                    j.log("Couldn't find Edge or Chrome to open by itself; using the app's browser window.")
+                    with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
+                        if not b.login():
+                            raise RuntimeError("Login wasn't completed.")
+                with TikTokBrowser(s, a.browser_dir(), j.log, headless=True, cancelled=j.cancelled) as b:
+                    if not b.logged_in():
+                        a.logged_in = False
+                        raise RuntimeError("TikTok's login wasn't saved in that window. Log in there, wait for "
+                                           "your feed to appear, then close it.")
                     a.logged_in = True
                     name = b.whoami()
             if name:
