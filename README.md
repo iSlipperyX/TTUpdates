@@ -6,6 +6,25 @@ A Windows desktop app that **scores your videos for TikTok**, lets you **put the
 Run it: `dist\TikTokManager\TikTokManager.exe` (keep the whole `TikTokManager` folder together;
 `dist\TikTokManager-windows.zip` is the same thing zipped for moving to another PC).
 
+## Accounts
+
+Run several TikTok accounts from one install. The **account button** at the top left shows which
+account the window is on; click it (or press **Ctrl+1…9**) to switch, or to add one.
+
+- Each account has its **own TikTok login** (its own browser profile, or its own API connection),
+  its **own queue and schedule**, its own **autopilot switch**, its own **stats and post history**, and
+  its own posting defaults: who can watch, hashtags added to every post, and the niche the AI writes
+  captions for (**Manage accounts**).
+- The **video library is shared**. "Queue for …" adds the selected videos to the account you're on;
+  right-click to queue them for another account, move a queued video to another account's queue,
+  or queue a copy of an already-posted video for a second account.
+- **Autopilot posts for every account that has it on**, one upload at a time (the most overdue video
+  goes first). An account that isn't logged in is skipped, and the app tells you once.
+- Before each browser upload the app checks which TikTok account the browser is logged in to, and
+  stops if it isn't the account the video is queued for.
+- Upgrading from 1.0: your queue, schedule, stats and TikTok login become the first account
+  automatically. Nothing needs logging in again.
+
 ## Pages
 
 **Library**: drop in videos or whole folders. ClipMonster output folders bring their clip titles,
@@ -13,13 +32,13 @@ scores and "why it was picked" notes along. Every video gets a 0–100 score wit
 a breakdown, and concrete tips ("1.2 s of silence at the start: trim it"). Write the caption and
 hashtags here, or click **✨ AI caption** to have Claude watch the clip, rate it and write them.
 
-**Queue**: the order videos will post in. Drag to reorder, or use **Sort by score** / **Smart order**
+**Queue**: the order the shown account's videos will post in. Drag to reorder, or use **Sort by score** / **Smart order**
 (best first, never two clips from the same source video back to back). Set posts per day, the
 posting window and the minimum gap; each video shows when it will go out. Pin a video to an exact
 time if you want. **Post selected now** posts immediately; **Autopilot** posts each video when its
 time comes.
 
-**Account**: log in, then see followers, likes, every video's views, likes, comments, shares and
+**Account**: log the shown account in, then see followers, likes, every video's views, likes, comments, shares and
 engagement, plus the change since the last refresh. "Posted from this app" is the history of
 everything the app posted or tried to post. Once a few posts have stats, the page tells you whether
 high-scoring videos really do get more views on *your* account.
@@ -43,8 +62,8 @@ Weights are adjustable in **Settings → Scoring**.
 
 **Browser (default, recommended).** The app opens TikTok Studio in your own Microsoft Edge (or Chrome)
 using a separate browser profile, uploads the file, types the caption and hashtags, sets "who can
-watch" and comment/duet/stitch, and clicks Post. You log in yourself once (**Account → Log in**); the
-app never sees your password. Leave **Show the browser window** on: TikTok is less likely to block a
+watch" and comment/duet/stitch, and clicks Post. You log in yourself once per account (**Account → Log in**);
+the app never sees your password. Leave **Show the browser window** on: TikTok is less likely to block a
 visible browser, and you can solve a captcha if one appears.
 
 **Official TikTok API (optional).** For people with their own app at developers.tiktok.com. Paste the
@@ -54,7 +73,8 @@ people should use the browser method.
 
 ## Autopilot
 
-Autopilot posts while the app is running. Closing the window keeps it running in the system tray.
+Autopilot posts while the app is running, for each account where it's switched on (on the Queue page,
+or from the tray icon's **Autopilot** menu). Closing the window keeps it running in the system tray.
 Turn on **Settings → Start with Windows** so it carries on after a restart. Only one copy of the app
 can run at a time, so nothing gets posted twice.
 
@@ -65,9 +85,10 @@ can run at a time, so nothing gets posted twice.
   the video isn't posted twice.
 - Automating TikTok's website is against the spirit of its terms. Keep the pace human (the default
   is 3 posts a day, 2 hours apart).
-- Your data: `%APPDATA%\TikTokManager` (library, settings; API keys and tokens are encrypted with your
-  Windows login) and `%LOCALAPPDATA%\TikTokManager` (thumbnails, the browser profile with your TikTok
-  login, logs).
+- Your data: `%APPDATA%\TikTokManager` (library, settings, `accounts.json`; API keys and tokens are
+  encrypted with your Windows login, one tokens file per account under `tokens\`) and
+  `%LOCALAPPDATA%\TikTokManager` (thumbnails, logs, and each account's browser profile with its TikTok
+  login under `browser-profiles\`; an account carried over from 1.0 keeps using `browser-profile`).
 - `TikTokManager.exe --selftest` checks ffmpeg and the browser automation and writes `selftest.txt`.
 
 ## Developing

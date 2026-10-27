@@ -1,4 +1,4 @@
-"""Account page: connect TikTok, see profile numbers, per-video stats and this app's post history."""
+"""Account page: the shown account's TikTok login, profile numbers, per-video stats and post history."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ import time
 import webbrowser
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QTableWidget, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QIcon
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..store import VideoItem
 from . import theme
 from .library import SortItem
 from .state import AppState
-from .widgets import StatCard, fmt_num, label, panel
+from .widgets import StatCard, account_badge, fmt_num, label, panel
 
 URL_ROLE = Qt.UserRole + 2
 ID_ROLE = Qt.UserRole + 1
@@ -27,6 +27,7 @@ class AccountPage(QWidget):
     logout_requested = Signal()
     refresh_requested = Signal()
     requeue_requested = Signal(str)
+    manage_requested = Signal(str)  # account id
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -40,6 +41,9 @@ class AccountPage(QWidget):
         conn = panel()
         cl = QHBoxLayout(conn)
         cl.setContentsMargins(14, 10, 14, 10)
+        self.badge = QLabel()
+        cl.addWidget(self.badge)
+        cl.addSpacing(4)
         self.who = label("", "h2")
         self.how = label("", "muted")
         col = QVBoxLayout()
@@ -49,7 +53,7 @@ class AccountPage(QWidget):
         cl.addLayout(col, 1)
         cl.addWidget(label("@"))
         self.username = QLineEdit()
-        self.username.setPlaceholderText("your TikTok username")
+        self.username.setPlaceholderText("TikTok username")
         self.username.setFixedWidth(180)
         self.username.setToolTip("Filled in automatically after you log in; you can also type it.")
         self.username.editingFinished.connect(self._username_changed)
@@ -61,7 +65,10 @@ class AccountPage(QWidget):
         self.logout_btn.clicked.connect(self._confirm_logout)
         self.refresh_btn = QPushButton("⟳ Refresh stats")
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
-        for b in (self.login_btn, self.refresh_btn, self.logout_btn):
+        self.manage_btn = QPushButton("Account settings…")
+        self.manage_btn.setToolTip("Name, posting defaults and niche for this account; add or remove accounts")
+        self.manage_btn.clicked.connect(lambda: self.manage_requested.emit(self.state.active.id))
+        for b in (self.login_btn, self.refresh_btn, self.logout_btn, self.manage_btn):
             cl.addWidget(b)
         root.addWidget(conn)
 
@@ -94,6 +101,7 @@ class AccountPage(QWidget):
         root.addWidget(hint)
 
         self.state.account_changed.connect(self.refresh)
+        self.state.account_switched.connect(self.refresh)
         self.state.library_changed.connect(self.refresh)
         self.state.jobs_changed.connect(self._update_buttons)
         self.refresh()
@@ -116,23 +124,25 @@ class AccountPage(QWidget):
     # --- refresh ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        s, st = self.state.settings, self.state.store
-        p = st.profile
+        s, st, a = self.state.settings, self.state.store, self.state.active
+        p = st.profile(a.id)
         if not self.username.hasFocus():
-            self.username.setText(p.username)
+            self.username.setText(a.username)
+        self.badge.setPixmap(account_badge(a.id, a.label, 34))
         if s.upload_method == "api":
             from ..tiktok.api import Tokens
 
-            connected = Tokens.load().usable
+            connected = Tokens.load(a.tokens_path()).usable
             self.how.setText("Connected with the official TikTok API" if connected else
                              "Official TikTok API: not connected (set up in Settings → TikTok API)")
             self.login_btn.setText("Connect")
         else:
-            connected = s.browser_logged_in
+            connected = a.logged_in
             self.how.setText("Posting through TikTok's website in your browser (" +
-                             ("Edge" if s.browser_channel == "msedge" else "Chrome") + ")")
+                             ("Edge" if s.browser_channel == "msedge" else "Chrome") + ", this account's own profile)")
             self.login_btn.setText("Log in")
-        name = p.nickname or (f"@{p.username}" if p.username else "")
+        title, handle = a.name or p.nickname, f"@{a.username}" if a.username else ""
+        name = f"{title} ({handle})" if title and handle else title or handle or "New account"
         if not connected:
             name = f"Not logged in{' · ' + name if name else ''}"
         when = f" · updated {_ago(p.fetched_at)}" if p.fetched_at else ""
@@ -142,14 +152,14 @@ class AccountPage(QWidget):
         self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—", *self._delta(p.followers, prev[1] if prev else None))
         self.c_likes.set(fmt_num(p.likes) if p.fetched_at else "—", *self._delta(p.likes, prev[2] if prev else None))
         self.c_videos.set(fmt_num(p.video_count) if p.fetched_at else "—")
-        vids = sorted(st.tiktok_videos.values(), key=lambda v: v.create_time, reverse=True)
+        vids = sorted(st.videos(a.id).values(), key=lambda v: v.create_time, reverse=True)
         total_views = sum(v.views for v in vids)
         self.c_views.set(fmt_num(total_views) if vids else "—", f"across {len(vids)} videos" if vids else "")
         recent = [v.views for v in vids[:10]]
         self.c_avg.set(fmt_num(statistics.median(recent)) if recent else "—")
 
         # Videos table
-        by_tid = {i.tiktok_id: i for i in st.items.values() if i.tiktok_id}
+        by_tid = {i.tiktok_id: i for i in st.items.values() if i.tiktok_id and i.account == a.id}
         self.videos.setSortingEnabled(False)
         self.videos.setRowCount(len(vids))
         for r, v in enumerate(vids):
@@ -174,7 +184,7 @@ class AccountPage(QWidget):
         self.videos.setSortingEnabled(True)
 
         # App history
-        posted = [i for i in st.items.values() if i.status in ("posted", "failed") or i.attempts]
+        posted = [i for i in st.items.values() if i.account == a.id and (i.status in ("posted", "failed") or i.attempts)]
         posted.sort(key=lambda i: i.posted_at or i.added_at, reverse=True)
         self.history.setSortingEnabled(False)
         self.history.setRowCount(len(posted))
@@ -212,9 +222,9 @@ class AccountPage(QWidget):
 
     def _insight(self) -> str:
         """Does a higher score actually mean more views on this account? Compare halves once there's data."""
-        st = self.state.store
+        st, aid = self.state.store, self.state.active.id
         pairs = [(i.total, st.video_for(i).views) for i in st.items.values()
-                 if i.total is not None and st.video_for(i) and time.time() - (i.posted_at or 0) > 86400]
+                 if i.account == aid and i.total is not None and st.video_for(i) and time.time() - (i.posted_at or 0) > 86400]
         if len(pairs) < 4:
             return ("<span style='color:%s'>Post a few videos from the queue and refresh stats: this page will show "
                     "whether high-scoring clips really get more views on your account.</span>" % theme.MUTED)
@@ -232,24 +242,34 @@ class AccountPage(QWidget):
         return f"📈 {msg}"
 
     def _update_buttons(self) -> None:
-        busy = self.state.busy("account") or self.state.busy("login")
+        busy = self.state.account_busy(self.state.active.id, ("account", "login"))
         self.refresh_btn.setEnabled(not busy)
         self.login_btn.setEnabled(not busy)
         self.logout_btn.setEnabled(not busy)
-        self.refresh_btn.setText("Refreshing…" if self.state.busy("account") else "⟳ Refresh stats")
+        self.refresh_btn.setText("Refreshing…" if self.state.account_busy(self.state.active.id, ("account",))
+                                 else "⟳ Refresh stats")
 
     # --- actions ------------------------------------------------------------------
 
     def _username_changed(self) -> None:
+        a = self.state.active
         name = self.username.text().strip().lstrip("@")
-        if name != self.state.store.profile.username:
-            with self.state.store.lock:
-                self.state.store.profile.username = name
-            self.state.save_soon()
+        if name == a.username:
+            return
+        other = self.state.accounts.find_username(name, exclude=a.id)
+        if other:
+            QMessageBox.warning(self, "Account", f"@{name} is already added as “{other.label}”.")
+            self.username.setText(a.username)
+            return
+        a.username = name
+        self.state.save_accounts()
+        self.state.accounts_edited()
 
     def _confirm_logout(self) -> None:
-        if QMessageBox.question(self, "Log out", "Log out of TikTok in TikTok Manager?\n"
-                                "Autopilot can't post until you log in again.") == QMessageBox.Yes:
+        a = self.state.active
+        if QMessageBox.question(self, "Log out", f"Log {a.label} out of TikTok in TikTok Manager?\n"
+                                "Autopilot can't post for it until you log in again. Your other accounts stay "
+                                "logged in.") == QMessageBox.Yes:
             self.logout_requested.emit()
 
     def _open_url(self, table: QTableWidget, row: int) -> None:
@@ -274,7 +294,20 @@ class AccountPage(QWidget):
             m.addAction("Put back in the queue", lambda: self.requeue_requested.emit(item.id))
         if item.status == "posted":
             m.addAction("Post it again (re-queue)", lambda: self.requeue_requested.emit(item.id))
+            others = [a for a in self.state.accounts if a.id != item.account]
+            if others:
+                also = m.addMenu("Also post to")
+                for a in others:
+                    also.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label,
+                                   lambda i=a.id: self._copy_to(item.id, i))
         m.exec(self.history.viewport().mapToGlobal(pos))
+
+
+    def _copy_to(self, item_id: str, account_id: str) -> None:
+        self.state.store.copy_for(item_id, account_id)
+        self.state.save_soon()
+        self.state.log(f"Queued it for {self.state.accounts.label_for(account_id)} too.")
+        self.state.library_changed.emit()
 
 
 def _ago(ts: float) -> str:

@@ -1,4 +1,4 @@
-"""The video library, upload queue and post history, saved as one JSON file."""
+"""The video library, each account's upload queue and stats, and the post history, saved as one JSON file."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field, fields
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 from .config import app_dir
@@ -41,7 +42,8 @@ class VideoItem:
     privacy: str = ""  # "" = use the default from settings
     # Queue
     status: str = "new"
-    queue_pos: int | None = None
+    account: str = ""  # id of the account it's queued for / was posted to ("" while it's just in the library)
+    queue_pos: int | None = None  # position in that account's queue
     pinned_at: float | None = None  # a fixed post time picked by the user (epoch seconds)
     planned_at: float | None = None  # computed by the scheduler
     # Result
@@ -108,6 +110,23 @@ class Profile:
     history: list[list[float]] = field(default_factory=list)  # [fetched_at, followers, likes, videos]
 
 
+@dataclass
+class AccountStats:
+    """What was last read from one TikTok account: profile numbers and its videos."""
+
+    profile: Profile = field(default_factory=Profile)
+    tiktok_videos: dict[str, TikTokVideo] = field(default_factory=dict)
+
+    def to_json(self) -> dict:
+        return {"profile": asdict(self.profile), "tiktok_videos": [asdict(v) for v in self.tiktok_videos.values()]}
+
+    @classmethod
+    def from_json(cls, data: dict) -> "AccountStats":
+        return cls(profile=_build(Profile, data.get("profile") or {}),
+                   tiktok_videos={d["id"]: _build(TikTokVideo, d) for d in data.get("tiktok_videos", [])
+                                  if d.get("id")})
+
+
 def _build(cls, data: dict):
     known = {f.name for f in fields(cls)}
     return cls(**{k: v for k, v in data.items() if k in known})
@@ -120,8 +139,7 @@ class Store:
         self.path = path or (app_dir() / "library.json")
         self.lock = threading.RLock()
         self.items: dict[str, VideoItem] = {}
-        self.profile = Profile()
-        self.tiktok_videos: dict[str, TikTokVideo] = {}
+        self.stats: dict[str, AccountStats] = {}  # by account id
         self.load()
 
     # --- persistence ------------------------------------------------------------
@@ -133,9 +151,12 @@ class Store:
             return
         with self.lock:
             self.items = {d["id"]: _build(VideoItem, d) for d in data.get("items", []) if d.get("id")}
-            self.profile = _build(Profile, data.get("profile") or {})
-            self.tiktok_videos = {d["id"]: _build(TikTokVideo, d) for d in data.get("tiktok_videos", [])
-                                  if d.get("id")}
+            accounts = data.get("accounts")
+            if isinstance(accounts, dict):
+                self.stats = {aid: AccountStats.from_json(d or {}) for aid, d in accounts.items()}
+            elif data.get("profile") or data.get("tiktok_videos"):
+                # Version 1 had one account; its stats wait under "" until adopt() gives them an owner.
+                self.stats = {"": AccountStats.from_json(data)}
             # A crash mid-upload leaves items stuck; put them back in the queue.
             for it in self.items.values():
                 if it.status == "uploading":
@@ -144,14 +165,54 @@ class Store:
     def save(self) -> None:
         with self.lock:
             data = {
-                "version": 1,
+                "version": 2,
                 "items": [asdict(i) for i in self.items.values()],
-                "profile": asdict(self.profile),
-                "tiktok_videos": [asdict(v) for v in self.tiktok_videos.values()],
+                "accounts": {aid: st.to_json() for aid, st in self.stats.items()},
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.path)
+
+    def adopt(self, account_ids: list[str], fallback: str) -> bool:
+        """Give every queue entry, post and set of stats an account that exists.
+
+        Entries from a single-account version (account "") go to `fallback`. Queued or failed
+        videos of an account that no longer exists go back to the library. Posted ones keep
+        their old account id so the history still says where they went. Returns True if
+        anything changed.
+        """
+        known = set(account_ids)
+        changed = False
+        with self.lock:
+            for it in self.items.values():
+                if it.account in known:
+                    continue
+                if not it.account and (it.queue_pos is not None or it.status != "new" or it.attempts):
+                    it.account = fallback
+                    changed = True
+                elif it.account and it.status != "posted":
+                    self._unqueue(it)
+                    changed = True
+            legacy = self.stats.pop("", None)
+            if legacy is not None:
+                if fallback not in self.stats or not self.stats[fallback].profile.fetched_at:
+                    self.stats[fallback] = legacy
+                changed = True
+            for aid in [a for a in self.stats if a not in known]:
+                del self.stats[aid]
+                changed = True
+            if changed:
+                self._renumber()
+        return changed
+
+    def forget_account(self, account_id: str) -> None:
+        """An account was removed: its queue goes back to the library, its stats are dropped."""
+        with self.lock:
+            for it in self.items.values():
+                if it.account == account_id and it.status != "posted":
+                    self._unqueue(it)
+            self.stats.pop(account_id, None)
+            self._renumber()
 
     # --- library ----------------------------------------------------------------
 
@@ -204,33 +265,67 @@ class Store:
         with self.lock:
             return list(self.items.values())
 
+    def copy_for(self, item_id: str, account: str) -> VideoItem | None:
+        """Queue the same video for another account as a separate entry (its own status and stats)."""
+        with self.lock:
+            src = self.items.get(item_id)
+            if src is None:
+                return None
+            fresh = VideoItem()
+            copy = replace(src, id=fresh.id, added_at=fresh.added_at, info=deepcopy(src.info),
+                           analysis=deepcopy(src.analysis), score=deepcopy(src.score), ai=deepcopy(src.ai),
+                           status="new", account="", queue_pos=None, pinned_at=None, planned_at=None,
+                           attempts=0, last_error="", posted_at=None, tiktok_id="", tiktok_url="", publish_id="")
+            self.items[copy.id] = copy
+            self.enqueue([copy.id], account)
+            return copy
+
     # --- queue ------------------------------------------------------------------
 
-    def queue(self) -> list[VideoItem]:
+    def queue(self, account: str | None = None) -> list[VideoItem]:
+        """One account's queue in order (every account's when `account` is None)."""
         with self.lock:
-            q = [i for i in self.items.values() if i.queue_pos is not None and i.status in ("queued", "uploading", "failed")]
+            q = [i for i in self.items.values() if i.queue_pos is not None
+                 and i.status in ("queued", "uploading", "failed") and (account is None or i.account == account)]
             return sorted(q, key=lambda i: i.queue_pos)
 
-    def enqueue(self, ids: list[str]) -> None:
+    def enqueue(self, ids: list[str], account: str) -> None:
+        """Add videos to the end of `account`'s queue (videos in another queue are left where they are)."""
         with self.lock:
-            nxt = max((i.queue_pos for i in self.items.values() if i.queue_pos is not None), default=-1) + 1
+            nxt = max((i.queue_pos for i in self.items.values()
+                       if i.queue_pos is not None and i.account == account), default=-1) + 1
             for item_id in ids:
                 it = self.items.get(item_id)
                 if not it or it.status == "posted" or it.queue_pos is not None:
                     continue
-                it.queue_pos, it.status, it.last_error = nxt, "queued", ""
+                it.queue_pos, it.status, it.last_error, it.account = nxt, "queued", "", account
                 nxt += 1
             self._renumber()
+
+    def move_to(self, ids: list[str], account: str) -> None:
+        """Move queued videos to the end of another account's queue."""
+        with self.lock:
+            movable = [i for i in ids if (it := self.items.get(i)) and it.queue_pos is not None
+                       and it.status != "uploading" and it.account != account]
+            for item_id in movable:
+                it = self.items[item_id]
+                it.queue_pos, it.planned_at, it.pinned_at, it.status = None, None, None, "new"
+            self.enqueue(movable, account)
 
     def dequeue(self, ids: list[str]) -> None:
         with self.lock:
             for item_id in ids:
                 it = self.items.get(item_id)
                 if it and it.status != "uploading":
-                    it.queue_pos, it.planned_at, it.pinned_at = None, None, None
-                    if it.status in ("queued", "failed"):
-                        it.status = "new"
+                    self._unqueue(it)
             self._renumber()
+
+    def _unqueue(self, it: VideoItem) -> None:
+        it.queue_pos, it.planned_at, it.pinned_at = None, None, None
+        if it.status in ("queued", "failed", "uploading"):
+            it.status, it.account = "new", ""
+        elif it.status == "new":
+            it.account = ""
 
     def set_order(self, ids: list[str]) -> None:
         with self.lock:
@@ -240,51 +335,73 @@ class Store:
             self._renumber()
 
     def _renumber(self) -> None:
+        """Positions 0, 1, 2… within each account's queue."""
         q = sorted((i for i in self.items.values() if i.queue_pos is not None), key=lambda i: i.queue_pos)
-        for pos, it in enumerate(q):
-            it.queue_pos = pos
+        nxt: dict[str, int] = {}
+        for it in q:
+            it.queue_pos = nxt.get(it.account, 0)
+            nxt[it.account] = it.queue_pos + 1
 
-    def posted(self) -> list[VideoItem]:
+    def posted(self, account: str | None = None) -> list[VideoItem]:
         with self.lock:
-            return sorted((i for i in self.items.values() if i.status == "posted"),
+            return sorted((i for i in self.items.values() if i.status == "posted"
+                           and (account is None or i.account == account)),
                           key=lambda i: i.posted_at or 0, reverse=True)
 
-    def last_post_time(self) -> float | None:
-        times = [i.posted_at for i in self.items.values() if i.posted_at]
+    def last_post_time(self, account: str | None = None) -> float | None:
+        times = [i.posted_at for i in self.items.values()
+                 if i.posted_at and (account is None or i.account == account)]
         return max(times) if times else None
 
-    def posts_since(self, since: float) -> int:
-        return sum(1 for i in self.items.values() if i.posted_at and i.posted_at >= since)
+    def posts_since(self, since: float, account: str | None = None) -> int:
+        return sum(1 for i in self.items.values()
+                   if i.posted_at and i.posted_at >= since and (account is None or i.account == account))
 
     # --- account ----------------------------------------------------------------
 
-    def update_tiktok_videos(self, videos: list[TikTokVideo]) -> None:
+    def stats_for(self, account: str) -> AccountStats:
+        with self.lock:
+            if account not in self.stats:
+                self.stats[account] = AccountStats()
+            return self.stats[account]
+
+    def profile(self, account: str) -> Profile:
+        return self.stats_for(account).profile
+
+    def videos(self, account: str) -> dict[str, TikTokVideo]:
+        return self.stats_for(account).tiktok_videos
+
+    def update_tiktok_videos(self, account: str, videos: list[TikTokVideo]) -> None:
         now = time.time()
         with self.lock:
+            known = self.videos(account)
             for v in videos:
-                old = self.tiktok_videos.get(v.id)
+                old = known.get(v.id)
                 if old:
                     v.history = old.history
                 v.history = (v.history + [[now, v.views, v.likes, v.comments, v.shares]])[-60:]
-                self.tiktok_videos[v.id] = v
-            self.link_posts()
+                known[v.id] = v
+            self.link_posts(account)
 
-    def update_profile(self, p: Profile) -> None:
+    def update_profile(self, account: str, p: Profile) -> None:
         with self.lock:
-            p.history = (self.profile.history + [[time.time(), p.followers, p.likes, p.video_count]])[-120:]
-            p.username = p.username or self.profile.username
-            self.profile = p
+            st = self.stats_for(account)
+            p.history = (st.profile.history + [[time.time(), p.followers, p.likes, p.video_count]])[-120:]
+            p.username = p.username or st.profile.username
+            st.profile = p
 
-    def link_posts(self) -> None:
-        """Match items this app posted to videos on the account (by id, else by caption and time)."""
+    def link_posts(self, account: str) -> None:
+        """Match items this app posted to the account's videos (by id, else by caption and time)."""
         with self.lock:
-            taken = {i.tiktok_id for i in self.items.values() if i.tiktok_id}
-            for it in self.items.values():
+            mine = [i for i in self.items.values() if i.account == account]
+            videos = self.videos(account)
+            taken = {i.tiktok_id for i in mine if i.tiktok_id}
+            for it in mine:
                 if it.status != "posted" or it.tiktok_id:
                     continue
                 want = _norm(it.caption)[:60]
                 best = None
-                for v in self.tiktok_videos.values():
+                for v in videos.values():
                     if v.id in taken:
                         continue
                     close_in_time = it.posted_at and abs(v.create_time - it.posted_at) < 6 * 3600
@@ -299,7 +416,9 @@ class Store:
                     taken.add(best.id)
 
     def video_for(self, item: VideoItem) -> TikTokVideo | None:
-        return self.tiktok_videos.get(item.tiktok_id) if item.tiktok_id else None
+        if not item.tiktok_id or item.account not in self.stats:
+            return None
+        return self.stats[item.account].tiktok_videos.get(item.tiktok_id)
 
 
 def _norm(text: str) -> str:

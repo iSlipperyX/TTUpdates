@@ -1,4 +1,4 @@
-"""Main window: navigation, activity log, tray icon, autopilot, and the TikTok actions."""
+"""Main window: navigation, account switcher, activity log, tray icon, autopilot, and the TikTok actions."""
 
 from __future__ import annotations
 
@@ -8,21 +8,25 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
+                               QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
+                               QWidget)
 
-from .. import jobs, schedule, updater
+from .. import jobs, updater
+from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
 from . import theme
 from .account import AccountPage
+from .accounts_dialog import AccountsDialog, account_status
 from .library import LibraryPage
 from .queue_page import QueuePage
 from .settings_dialog import SettingsDialog
 from .state import AppState, Job
+from .widgets import account_badge
 
 AUTOPILOT_CHECK_MS = 30_000
 UPDATE_CHECK_MS = 6 * 3600 * 1000
@@ -82,7 +86,16 @@ class MainWindow(QMainWindow):
         brand.setObjectName("brand")
         brand.setToolTip(f"Version {VERSION}")
         hl.addWidget(brand)
-        hl.addSpacing(18)
+        hl.addSpacing(14)
+        self.account_btn = QPushButton()
+        self.account_btn.setObjectName("accountSwitch")
+        self.account_btn.setIconSize(QSize(22, 22))
+        self.account_btn.setMinimumWidth(150)
+        self.account_menu = QMenu(self)
+        self.account_menu.aboutToShow.connect(self._fill_account_menu)
+        self.account_btn.setMenu(self.account_menu)
+        hl.addWidget(self.account_btn)
+        hl.addSpacing(10)
         self.nav = QButtonGroup(self)
         self.stack = QStackedWidget()
         self.library = LibraryPage(state)
@@ -150,6 +163,14 @@ class MainWindow(QMainWindow):
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
         self.account.requeue_requested.connect(self.requeue)
+        self.account.manage_requested.connect(self.manage_accounts)
+        state.account_switched.connect(self._account_switched)
+        state.account_changed.connect(self._update_account_button)
+        state.library_changed.connect(self._update_account_button)
+        for n in range(1, 10):  # Ctrl+1…9 shows account 1…9
+            QShortcut(QKeySequence(f"Ctrl+{n}"), self, activated=lambda n=n: self._switch_to_number(n))
+        self._warned_cant_post: set[str] = set()
+        self._update_account_button()
 
         self._make_tray()
         self.autopilot_timer = QTimer(self, interval=AUTOPILOT_CHECK_MS, timeout=self.autopilot_tick)
@@ -169,8 +190,12 @@ class MainWindow(QMainWindow):
         unscored = [i.id for i in state.store.all() if not i.score and not i.analyze_error and i.exists()]
         if unscored:
             QTimer.singleShot(500, lambda: self.library.score(unscored))
+        n_acc = len(state.accounts)
         self._log(f"{APP_NAME} {VERSION} ready. {len(state.store.items)} videos in the library, "
-                  f"{len(state.store.queue())} queued.")
+                  f"{len(state.store.queue())} queued" + (f" across {n_acc} accounts." if n_acc > 1 else "."))
+        if state.accounts.migrated and state.store.items:
+            self._log("Your existing queue, schedule, stats and TikTok login are now the first account. "
+                      "Add more with the account button at the top left.")
         if start_hidden and self.tray:
             self.hide()
         else:
@@ -220,113 +245,224 @@ class MainWindow(QMainWindow):
             return
         if any(getattr(j, "item_id", None) == item_id for j in st.jobs if j.kind == "post"):
             return
+        account = st.accounts.get(item.account)
+        if account is None:
+            QMessageBox.warning(self, "Not queued", f"“{item.name}” isn't in an account's queue.")
+            return
         if not item.exists():
             QMessageBox.warning(self, "Missing file", f"The video file is missing:\n{item.path}")
             return
-        job = Job(f"Posting “{item.name}”", lambda j: jobs.post_item(st.store, item_id, st.settings, j.log,
-                                                                     j.cancelled, j.progress), kind="post")
+        job = Job(f"Posting “{item.name}” to {account.handle}",
+                  lambda j: jobs.post_item(st.store, item_id, st.settings, account, j.log, j.cancelled, j.progress),
+                  kind="post")
         job.item_id = item_id
-        job.signals.progress.connect(lambda m: self.job_label.setText(m))
+        job.account_id = account.id
+        job.signals.progress.connect(lambda m: self.job_label.setText(f"{account.handle}: {m}"))
 
         def ok(it):
-            self._log(f"✔ Posted “{it.name}” to TikTok.")
-            self._notify("Posted to TikTok", it.name)
+            self._log(f"✔ Posted “{it.name}” to {account.handle}.")
+            self._notify(f"Posted to {account.handle}", it.name)
             st.library_changed.emit()
 
         def fail(msg):
             if "log in" in msg.lower() and st.settings.upload_method == "browser":
-                st.settings.browser_logged_in = False
-                st.save_settings()
+                account.logged_in = False
+                st.save_accounts()
                 st.account_changed.emit()
             st.library_changed.emit()
             if msg != "Cancelled":
-                self._notify("Couldn't post to TikTok", msg, error=True)
+                self._notify(f"Couldn't post to {account.handle}", msg, error=True)
 
-        self._log(f"Posting “{item.name}”…")
+        self._log(f"Posting “{item.name}” to {account.handle}…")
         st.run(job, pool="tiktok", on_success=ok, on_failure=fail)
         st.library_changed.emit()
 
     def autopilot_tick(self) -> None:
-        if not self.state.settings.autopilot or self.state.busy("post") or self.state.busy("login"):
+        st = self.state
+        if not any(a.autopilot for a in st.accounts) or st.busy("post") or st.busy("login"):
             return
-        self.queue.replan()
-        item = schedule.due(self.state.store.queue(), time.time())
-        if item and item.exists():
-            self._log(f"Autopilot: “{item.name}” is due.")
+        skipped: list[str] = []
+        pick = jobs.autopilot_pick(st.store, st.accounts, st.settings, log=skipped.append)
+        for msg in skipped:  # due videos whose file is gone were marked failed
+            self._log(msg)
+        if skipped:
+            st.save_soon()
+            st.library_changed.emit()
+        self._warn_cant_post()
+        if pick:
+            account, item = pick
+            self._log(f"Autopilot: “{item.name}” is due on {account.handle}.")
             self.post(item.id)
+
+    def _warn_cant_post(self) -> None:
+        """Once per run, say so when autopilot is on for an account that isn't logged in."""
+        st = self.state
+        for a in st.accounts:
+            if not a.autopilot or jobs.can_autopost(a, st.settings) or a.id in self._warned_cant_post:
+                continue
+            if any(i.status == "queued" and i.planned_at and i.planned_at <= time.time() for i in st.store.queue(a.id)):
+                self._warned_cant_post.add(a.id)
+                msg = f"Autopilot is on for {a.handle}, but it isn't logged in. Log in on the Account page."
+                self._log(f"⚠ {msg}")
+                self._notify("Autopilot can't post", msg, error=True)
 
     def login(self) -> None:
         st = self.state
         s = st.settings
+        a = st.active
+        if st.account_busy(a.id, ("login",)):
+            return
+        result: dict = {}
 
         def work(j: Job):
             if s.upload_method == "api":
                 from ..tiktok.api import TikTokAPI
 
-                TikTokAPI(s, j.log).connect(cancelled=j.cancelled)
+                api = TikTokAPI(s, a.tokens_path(), j.log)
+                api.connect(cancelled=j.cancelled)
+                name = api.profile().username
             else:
                 from ..tiktok.browser import TikTokBrowser
 
-                with TikTokBrowser(s, j.log, headless=False, cancelled=j.cancelled) as b:
+                with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
                     if not b.login():
                         raise RuntimeError("Login wasn't completed.")
-                    s.browser_logged_in = True
+                    a.logged_in = True
                     name = b.whoami()
-                    if name:
-                        with st.store.lock:
-                            st.store.profile.username = name
-                        j.log(f"Logged in as @{name}.")
-            jobs.refresh_account(st.store, s, j.log, j.cancelled)
+            if name:
+                if a.username and a.username.lower() != name.lower():
+                    j.log(f"⚠ {a.label} was @{a.username}; it's now logged in as @{name}.")
+                a.username = name
+                j.log(f"Logged in as @{name}.")
+                other = st.accounts.find_username(name, exclude=a.id)
+                if other:
+                    result["duplicate"] = other.label
+            self._warned_cant_post.discard(a.id)
+            jobs.refresh_account(st.store, s, a, j.log, j.cancelled)
 
         def finished(_=None):
-            st.save_settings()
-            st.account_changed.emit()
+            st.save_accounts()
+            st.accounts_edited()
+            if result.get("duplicate"):
+                QMessageBox.warning(self, "Same TikTok account twice",
+                                    f"@{a.username} is also added as “{result['duplicate']}”. Both entries would post "
+                                    "to the same TikTok account. Remove one in Manage accounts, or log this one in "
+                                    "to a different TikTok account.")
 
-        st.run(Job("Logging in to TikTok", work, kind="login"), pool="tiktok", on_success=finished, on_failure=finished)
+        job = Job(f"Logging {a.label} in to TikTok", work, kind="login")
+        job.account_id = a.id
+        st.run(job, pool="tiktok", on_success=finished, on_failure=finished)
 
     def logout(self) -> None:
         st = self.state
         s = st.settings
+        a = st.active
 
         def work(j: Job):
             if s.upload_method == "api":
                 from ..tiktok.api import TikTokAPI
 
-                TikTokAPI(s, j.log).disconnect()
+                TikTokAPI(s, a.tokens_path(), j.log).disconnect()
             else:
                 from ..tiktok.browser import TikTokBrowser
 
-                with TikTokBrowser(s, j.log, headless=True) as b:
+                with TikTokBrowser(s, a.browser_dir(), j.log, headless=True) as b:
                     b.logout()
-                s.browser_logged_in = False
-            j.log("Logged out of TikTok.")
+                a.logged_in = False
+            j.log(f"Logged {a.handle} out of TikTok.")
 
-        st.run(Job("Logging out", work, kind="login"), pool="tiktok",
-               on_success=lambda _: (st.save_settings(), st.account_changed.emit()))
+        job = Job(f"Logging {a.label} out", work, kind="login")
+        job.account_id = a.id
+        st.run(job, pool="tiktok", on_success=lambda _: (st.save_accounts(), st.account_changed.emit()))
 
     def refresh_account(self) -> None:
         st = self.state
-        if st.busy("account"):
+        a = st.active
+        if st.account_busy(a.id, ("account",)):
             return
-        st.run(Job("Refreshing TikTok stats", lambda j: jobs.refresh_account(st.store, st.settings, j.log, j.cancelled),
-                   kind="account"), pool="tiktok",
-               on_success=lambda _: (st.account_changed.emit(), st.library_changed.emit()))
+        job = Job(f"Refreshing {a.label}'s TikTok stats",
+                  lambda j: jobs.refresh_account(st.store, st.settings, a, j.log, j.cancelled), kind="account")
+        job.account_id = a.id
+        st.run(job, pool="tiktok", on_success=lambda _: (st.save_accounts(), st.account_changed.emit(),
+                                                         st.library_changed.emit()))
 
     def requeue(self, item_id: str) -> None:
         st = self.state
         it = st.store.get(item_id)
         if not it:
             return
+        account = st.accounts.get(it.account) or st.active
         with st.store.lock:
             if it.status == "posted":
                 it.status, it.posted_at, it.tiktok_id, it.tiktok_url = "new", None, "", ""
             if it.status == "failed":
                 it.status, it.last_error = ("queued" if it.queue_pos is not None else "new"), ""
         if it.queue_pos is None:
-            st.store.enqueue([item_id])
+            st.store.enqueue([item_id], account.id)
         st.save_soon()
         st.library_changed.emit()
-        self._log(f"“{it.name}” is back in the queue.")
+        self._log(f"“{it.name}” is back in {account.handle}'s queue.")
+
+    # --- accounts -------------------------------------------------------------------
+
+    def _update_account_button(self) -> None:
+        st = self.state
+        a = st.active
+        self.account_btn.setIcon(QIcon(account_badge(a.id, a.label, 22)))
+        self.account_btn.setText(f" {a.label}  ")
+        self.account_btn.setToolTip(f"{a.label}: {account_status(st, a)}\nClick to switch accounts (Ctrl+1…9).")
+        self.setWindowTitle(f"{a.label} · {APP_NAME}" if len(st.accounts) > 1 else APP_NAME)
+
+    def _fill_account_menu(self) -> None:
+        st = self.state
+        m = self.account_menu
+        m.clear()
+        group = QActionGroup(m)
+        for n, a in enumerate(st.accounts, 1):
+            text = f"{a.label}   ·   {account_status(st, a)}" + (f"\tCtrl+{n}" if n <= 9 else "")
+            act = QAction(QIcon(account_badge(a.id, a.label, 22)), text, m)
+            act.setCheckable(True)
+            act.setChecked(a.id == st.active.id)
+            act.triggered.connect(lambda _=False, i=a.id: st.switch_account(i))
+            group.addAction(act)
+            m.addAction(act)
+        m.addSeparator()
+        m.addAction("＋ Add account…", self.add_account)
+        m.addAction("Manage accounts…", self.manage_accounts)
+
+    def _switch_to_number(self, n: int) -> None:
+        ids = self.state.accounts.ids()
+        if n <= len(ids):
+            self.state.switch_account(ids[n - 1])
+
+    def _account_switched(self) -> None:
+        a = self.state.active
+        self._update_account_button()
+        self._log(f"Showing {a.label}.")
+
+    def add_account(self) -> Account | None:
+        name, ok = QInputDialog.getText(self, "Add account",
+                                        "A name for the new account (optional; its @username is used once you log in):",
+                                        QLineEdit.Normal, "")
+        if not ok:
+            return None
+        st = self.state
+        a = st.add_account(name)
+        st.switch_account(a.id)
+        self.nav_buttons[2].click()
+        how = ("Your browser opens TikTok's approval page: approve with the TikTok account you want to add."
+               if st.settings.upload_method == "api" else
+               "A new browser window opens with its own empty profile: log in there with the TikTok account "
+               "you want to add. Your other accounts stay logged in.")
+        if QMessageBox.question(self, "Add account", f"Log in to TikTok for {a.label} now?\n\n{how}") == QMessageBox.Yes:
+            self.login()
+        return a
+
+    def manage_accounts(self, select: str = "") -> None:
+        dlg = AccountsDialog(self.state, self, select=select if isinstance(select, str) else "")
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.add_requested.connect(lambda: (dlg.reload(a.id) if (a := self.add_account()) else None))
+        dlg.exec()
 
     # --- settings -------------------------------------------------------------------
 
@@ -357,11 +493,8 @@ class MainWindow(QMainWindow):
         self.tray.setToolTip(f"{APP_NAME} {VERSION}")
         menu = QMenu()
         menu.addAction("Open", self._show_window)
-        self.tray_autopilot = QAction("Autopilot", menu, checkable=True)
-        self.tray_autopilot.setChecked(self.state.settings.autopilot)
-        self.tray_autopilot.toggled.connect(self.queue.autopilot.setChecked)
-        self.queue.autopilot.toggled.connect(self.tray_autopilot.setChecked)
-        menu.addAction(self.tray_autopilot)
+        self.tray_autopilot = menu.addMenu("Autopilot")
+        self.tray_autopilot.aboutToShow.connect(self._fill_tray_autopilot)
         menu.addAction("Check for updates", lambda: self.check_for_updates(manual=True))
         menu.addSeparator()
         menu.addAction("Quit", self.quit)
@@ -369,6 +502,20 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(lambda reason: self._show_window()
                                     if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
         self.tray.show()
+
+    def _fill_tray_autopilot(self) -> None:
+        st = self.state
+        m = self.tray_autopilot
+        m.clear()
+        for a in st.accounts:
+            act = QAction(QIcon(account_badge(a.id, a.label, 18)), a.label, m, checkable=True)
+            act.setChecked(a.autopilot)
+            act.toggled.connect(lambda on, i=a.id: st.set_autopilot(i, on))
+            m.addAction(act)
+        if len(st.accounts) > 1:
+            m.addSeparator()
+            m.addAction("On for every account", lambda: [st.set_autopilot(a.id, True) for a in st.accounts])
+            m.addAction("Off for every account", lambda: [st.set_autopilot(a.id, False) for a in st.accounts])
 
     def _notify(self, title: str, msg: str, error: bool = False) -> None:
         if self.tray and not self.isActiveWindow():
@@ -386,7 +533,8 @@ class MainWindow(QMainWindow):
             if not getattr(self, "_told_tray", False):
                 self._told_tray = True
                 self.tray.showMessage(APP_NAME, "Still running in the system tray"
-                                      + (" so autopilot can keep posting." if self.state.settings.autopilot else ".")
+                                      + (" so autopilot can keep posting." if any(a.autopilot for a in self.state.accounts)
+                                         else ".")
                                       + " Right-click the icon to quit.", QSystemTrayIcon.Information, 5000)
             return
         if self.state.busy("post") and QMessageBox.question(
@@ -619,7 +767,9 @@ class MainWindow(QMainWindow):
         if any(st.busy(k) for k in ("post", "login", "account", "update-download")):
             return
         soon = time.time() + AUTO_INSTALL_QUIET_MINUTES * 60
-        if s.autopilot and any(i.planned_at and i.planned_at <= soon for i in st.store.queue() if i.status == "queued"):
+        autopilot = {a.id for a in st.accounts if a.autopilot}
+        if any(i.account in autopilot and i.planned_at and i.planned_at <= soon
+               for i in st.store.queue() if i.status == "queued"):
             return
         self.auto_install_timer.stop()
         self._log(f"Installing {APP_NAME} {rel.version} automatically.")

@@ -59,6 +59,9 @@ QPushButton:checked {{ background: {SELECT}; border-color: {ACCENT}; }}
 QPushButton#nav {{ background: transparent; border: none; border-radius: 8px; padding: 8px 14px; color: {MUTED}; font-weight: 600; }}
 QPushButton#nav:hover {{ color: {TEXT}; background: {PANEL}; }}
 QPushButton#nav:checked {{ color: {TEXT}; background: {PANEL_2}; }}
+QPushButton#accountSwitch {{ background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 16px; padding: 5px 12px 5px 6px; font-weight: 600; text-align: left; }}
+QPushButton#accountSwitch:hover {{ border-color: {ACCENT}; }}
+QPushButton#accountSwitch::menu-indicator {{ subcontrol-position: right center; subcontrol-origin: padding; right: 8px; }}
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateTimeEdit, QTimeEdit {{
     background: {BG}; border: 1px solid {BORDER}; border-radius: 7px; padding: 5px 8px;

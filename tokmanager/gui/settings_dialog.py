@@ -90,9 +90,6 @@ class SettingsDialog(QDialog):
         self.show_browser.setToolTip("Recommended: TikTok is more likely to block hidden browsers, and you can solve a "
                                      "captcha if one appears.")
         f.addRow("", self.show_browser)
-        self.privacy = _combo([("public", "Everyone"), ("friends", "Friends"), ("private", "Only me")],
-                              settings.default_privacy)
-        f.addRow("Who can watch (default)", self.privacy)
         self.comments = QCheckBox("Comments")
         self.duet = QCheckBox("Duet")
         self.stitch = QCheckBox("Stitch")
@@ -109,9 +106,8 @@ class SettingsDialog(QDialog):
         self.template = QLineEdit(settings.caption_template)
         self.template.setToolTip("{caption} = the caption, {hashtags} = the video's + default hashtags, {title} = the title")
         f.addRow("Caption layout", self.template)
-        self.default_tags = QLineEdit(settings.default_hashtags)
-        self.default_tags.setPlaceholderText("#fyp #yourniche")
-        f.addRow("Always add hashtags", self.default_tags)
+        f.addRow("", label("Who can watch, hashtags added to every post and the niche are set for each account: "
+                           "account button (top left) → Manage accounts.", "muted", wrap=True))
         self.tray = QCheckBox("Closing the window keeps the app running in the system tray")
         self.tray.setChecked(settings.minimize_to_tray)
         f.addRow("", self.tray)
@@ -130,9 +126,8 @@ class SettingsDialog(QDialog):
         self.ai_model = _combo([("claude-opus-5-5", "Claude Opus 5.5 (best)"), ("claude-sonnet-5-5", "Claude Sonnet 5.5 (cheaper)"),
                                 ("claude-haiku-5-5", "Claude Haiku 5.5 (cheapest)")], settings.ai_model)
         f.addRow("Model", self.ai_model)
-        self.niche = QLineEdit(settings.ai_niche)
-        self.niche.setPlaceholderText("e.g. podcast clips about business for 18-30 year olds")
-        f.addRow("Your niche / audience", self.niche)
+        f.addRow("Niche / audience", label("Set for each account in Manage accounts, so captions fit "
+                                           "each account's audience.", "muted", wrap=True))
         self.tag_count = QSpinBox(minimum=0, maximum=10, value=settings.ai_hashtag_count)
         f.addRow("Hashtags to suggest", self.tag_count)
 
@@ -160,7 +155,7 @@ class SettingsDialog(QDialog):
 
         # Updates
         f = _form(tabs, "Updates", "New versions are published as releases on GitHub. Installing one replaces only "
-                                   "the app folder; your library, queue, settings and TikTok login are kept. If a new "
+                                   "the app folder; your library, queues, settings and TikTok logins are kept. If a new "
                                    "version fails to start, the previous one is restored automatically.")
         where = updater.install_dir()
         f.addRow("This version", label(f"{VERSION}" + ("" if where else "  (running from source: updates open the "
@@ -205,18 +200,15 @@ class SettingsDialog(QDialog):
         s.upload_method = self.method.currentData()
         s.browser_channel = self.channel.currentData()
         s.show_browser = self.show_browser.isChecked()
-        s.default_privacy = self.privacy.currentData()
         s.allow_comments, s.allow_duet, s.allow_stitch = (self.comments.isChecked(), self.duet.isChecked(),
                                                           self.stitch.isChecked())
         s.ai_generated_label = self.ai_label.isChecked()
         s.caption_template = self.template.text().strip() or "{caption} {hashtags}"
-        s.default_hashtags = self.default_tags.text().strip()
         s.minimize_to_tray = self.tray.isChecked()
         s.start_with_windows = self.startup.isChecked()
         s.ai_api_key = self.ai_key.text().strip()
         s.ai_enabled = bool(s.ai_api_key)
         s.ai_model = self.ai_model.currentData()
-        s.ai_niche = self.niche.text().strip()
         s.ai_hashtag_count = self.tag_count.value()
         s.api_client_key = self.client_key.text().strip()
         s.api_client_secret = self.client_secret.text().strip()
