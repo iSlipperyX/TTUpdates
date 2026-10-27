@@ -85,3 +85,19 @@ def refresh_account(s: Settings, account: Account, log: Callable[[str], None],
         if not username:  # public profiles can be read logged out; finding "me" needs the login
             b.require_login()
         return b.fetch_account(username)
+
+
+def check_upload(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
+                 full: bool = False) -> list[tuple[str, str, str]]:
+    """Check that TikTok Studio's uploader still works for this account, without posting (browser method).
+
+    The quick check opens the page; `full` also puts a 3 s black test clip in the uploader to find
+    the caption box, privacy picker and Post button, then discards it.
+    """
+    from ..config import cache_dir
+    from ..media import blank_clip
+    from .browser import TikTokBrowser
+
+    clip = blank_clip(cache_dir() / "upload-check.mp4") if full else None
+    with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
+        return b.check_upload_page(clip, expected_user=account.username)

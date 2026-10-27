@@ -28,6 +28,7 @@ class AccountPage(QWidget):
     login_requested = Signal()
     logout_requested = Signal()
     refresh_requested = Signal()
+    check_requested = Signal()  # test TikTok's upload page without posting
     requeue_requested = Signal(str)
     manage_requested = Signal(str)  # account id
 
@@ -52,6 +53,8 @@ class AccountPage(QWidget):
         col.setSpacing(0)
         col.addWidget(self.who)
         col.addWidget(self.how)
+        self.check_status = label("", "muted")
+        col.addWidget(self.check_status)
         cl.addLayout(col, 1)
         cl.addWidget(label("@"))
         self.username = QLineEdit()
@@ -67,10 +70,14 @@ class AccountPage(QWidget):
         self.logout_btn.clicked.connect(self._confirm_logout)
         self.refresh_btn = QPushButton("⟳ Refresh stats")
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
+        self.check_btn = QPushButton("Test posting")
+        self.check_btn.setToolTip("Walks TikTok Studio's upload page with a 3-second black test clip, up to just "
+                                  "before Post, then throws the clip away. Nothing is posted.")
+        self.check_btn.clicked.connect(self.check_requested.emit)
         self.manage_btn = QPushButton("Account settings…")
         self.manage_btn.setToolTip("Name, posting defaults and niche for this account; add or remove accounts")
         self.manage_btn.clicked.connect(lambda: self.manage_requested.emit(self.state.active.id))
-        for b in (self.login_btn, self.refresh_btn, self.logout_btn, self.manage_btn):
+        for b in (self.login_btn, self.refresh_btn, self.check_btn, self.logout_btn, self.manage_btn):
             cl.addWidget(b)
         root.addWidget(conn)
 
@@ -140,9 +147,17 @@ class AccountPage(QWidget):
             self.login_btn.setText("Connect")
         else:
             connected = a.logged_in
-            self.how.setText("Posting through TikTok's website in your browser (" +
-                             ("Edge" if s.browser_channel == "msedge" else "Chrome") + ", this account's own profile)")
+            self.how.setText("Posts through TikTok's website in " +
+                             ("Edge" if s.browser_channel == "msedge" else "Chrome") + " (this account's own profile)")
             self.login_btn.setText("Log in")
+        self.check_btn.setVisible(s.upload_method != "api" and connected)
+        tested = s.upload_method != "api" and a.upload_check_at
+        verdict = {"ok": "✓ Posting test passed", "warn": "⚠ Posting test passed with a warning",
+                   "fail": "✖ Posting test failed"}.get(a.upload_check, "Posting test ran")
+        self.check_status.setText(f"{verdict} {_ago(a.upload_check_at)}" if tested else "")
+        self.check_status.setToolTip(a.upload_check_detail if tested else "")
+        self.check_status.setVisible(bool(tested))
+        self.check_status.setStyleSheet(f"color: {theme.BAD};" if tested and a.upload_check == "fail" else "")
         title, handle = a.name or p.nickname, f"@{a.username}" if a.username else ""
         name = f"{title} ({handle})" if title and handle else title or handle or "New account"
         if not connected:
@@ -250,6 +265,9 @@ class AccountPage(QWidget):
         self.refresh_btn.setEnabled(not busy)
         self.login_btn.setEnabled(not busy)
         self.logout_btn.setEnabled(not busy)
+        checking = self.state.account_busy(self.state.active.id, ("check",))
+        self.check_btn.setEnabled(not busy and not checking and not self.state.busy("post"))
+        self.check_btn.setText("Testing…" if checking else "Test posting")
         self.refresh_btn.setText("Refreshing…" if self.state.account_busy(self.state.active.id, ("account",))
                                  else "⟳ Refresh stats")
 

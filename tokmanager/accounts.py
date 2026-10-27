@@ -59,6 +59,10 @@ class Account:
     default_privacy: str = "public"
     default_hashtags: str = "#fyp"
     niche: str = ""  # audience / topic, used by AI captions and ratings
+    # Last check of TikTok's upload page (tiktok.check_upload): when, "ok" | "warn" | "fail", what it found
+    upload_check_at: float = 0.0
+    upload_check: str = ""
+    upload_check_detail: str = ""
 
     def __post_init__(self) -> None:
         self.browser_profile = self.browser_profile or f"browser-profiles/{self.id}"

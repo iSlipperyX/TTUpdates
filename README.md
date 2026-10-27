@@ -113,6 +113,10 @@ can run at a time, so nothing gets posted twice.
 - TikTok changes its website often. If a browser upload fails, the error and a screenshot (in
   `%LOCALAPPDATA%\TikTokManager\logs`) say which step broke. Check TikTok Studio before retrying, so
   the video isn't posted twice.
+- **Test posting** on the Account page walks TikTok Studio's upload page with a 3-second black test
+  clip, up to just before Post, then throws the clip away. Nothing is posted. With autopilot on, a
+  shorter check (logged in, upload page opens) runs about once a day, never within 30 minutes of a
+  post, and warns you if TikTok has changed something.
 - Automating TikTok's website is against the spirit of its terms. Keep the pace human (the default
   is 3 posts a day, 2 hours apart).
 - Your data: `%APPDATA%\TikTokManager` (library, settings, `accounts.json`; API keys and tokens are
