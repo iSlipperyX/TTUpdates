@@ -116,7 +116,77 @@ def test_failed_build_deletes_the_draft(clone, monkeypatch):
     monkeypatch.setattr(release.subprocess, "run", failing_run)
     monkeypatch.setattr(release, "local_commit", lambda: ("a" * 40, []))
     monkeypatch.setenv("GITHUB_TOKEN", "t")
-    monkeypatch.setattr("sys.argv", ["release.py", "1.1.0", "--notes", "x", "--repo", "me/repo"])
+    monkeypatch.setattr("sys.argv", ["release.py", "1.1.0", "--local", "--notes", "x", "--repo", "me/repo"])
     with pytest.raises(subprocess.CalledProcessError):
         release.main()
     assert calls == ["draft", "deleted"]
+
+
+@pytest.fixture
+def repo_pair(tmp_path, monkeypatch):
+    """A clone of a bare 'GitHub' repo, set up like TTUpdates (config, notes)."""
+    origin = tmp_path / "origin.git"
+    run(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    work = tmp_path / "work"
+    run(tmp_path, "clone", "-q", str(origin), str(work))
+    run(work, "checkout", "-q", "-b", "main")
+    (work / "tokmanager").mkdir()
+    config = work / "tokmanager" / "config.py"
+    config.write_text('VERSION = "1.2.1"\nupdate_repo: str = "me/repo"\n', encoding="utf-8")
+    (work / "release-notes").mkdir()
+    (work / "release-notes" / "v1.3.0.md").write_text("## New\n", encoding="utf-8")
+    for cmd in (("add", "."), ("commit", "-q", "-m", "init"), ("push", "-q", "-u", "origin", "main")):
+        run(work, "-c", "user.email=t@t", "-c", "user.name=t", *cmd)
+    run(work, "config", "user.email", "t@t")
+    run(work, "config", "user.name", "t")
+    monkeypatch.setattr(release, "ROOT", work)
+    monkeypatch.setattr(release, "CONFIG", config)
+    monkeypatch.setattr(release, "NOTES_DIR", work / "release-notes")
+    return origin, work
+
+
+def git_out(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True).stdout.strip()
+
+
+def test_tag_release_bumps_tags_and_pushes(repo_pair, capsys):
+    origin, work = repo_pair
+    assert release.tag_release("1.3.0", "me/repo") == 0
+    assert 'VERSION = "1.3.0"' in (work / "tokmanager" / "config.py").read_text(encoding="utf-8")
+    assert git_out(origin, "log", "-1", "--format=%s", "main") == "Release 1.3.0"
+    # The tag is on GitHub and points at the bump commit, so the build reports the right version.
+    assert git_out(origin, "rev-parse", "v1.3.0^{commit}") == git_out(origin, "rev-parse", "main")
+    assert "github.com/me/repo/actions" in capsys.readouterr().out
+
+
+def test_tag_release_refuses_without_notes(repo_pair):
+    with pytest.raises(SystemExit, match="release-notes/v1.4.0.md is missing"):
+        release.tag_release("1.4.0", "me/repo")
+
+
+def test_tag_release_refuses_a_clone_behind_github(repo_pair, tmp_path):
+    origin, work = repo_pair
+    other = tmp_path / "other"
+    run(tmp_path, "clone", "-q", str(origin), str(other))
+    (other / "x.txt").write_text("newer\n", encoding="utf-8")
+    for cmd in (("add", "."), ("commit", "-q", "-m", "newer"), ("push", "-q")):
+        run(other, "-c", "user.email=t@t", "-c", "user.name=t", *cmd)
+    with pytest.raises(SystemExit, match="git pull"):
+        release.tag_release("1.3.0", "me/repo")
+    assert git_out(work, "tag") == ""  # nothing was tagged
+
+
+def test_tag_release_refuses_a_tag_that_exists_on_github(repo_pair):
+    origin, work = repo_pair
+    run(work, "tag", "v1.3.0")
+    run(work, "push", "-q", "origin", "v1.3.0")
+    run(work, "tag", "-d", "v1.3.0")
+    with pytest.raises(SystemExit, match="already exists on GitHub"):
+        release.tag_release("1.3.0", "me/repo")
+
+
+def test_tag_release_without_push_only_tags_here(repo_pair, capsys):
+    origin, work = repo_pair
+    assert release.tag_release("1.3.0", "me/repo", push=False) == 0
+    assert git_out(work, "tag") == "v1.3.0" and git_out(origin, "tag") == ""
+    assert "git push origin v1.3.0" in capsys.readouterr().out

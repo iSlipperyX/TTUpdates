@@ -116,6 +116,7 @@ class Profile:
     username: str = ""
     nickname: str = ""
     avatar: str = ""
+    bio: str = ""
     followers: int = 0
     following: int = 0
     likes: int = 0

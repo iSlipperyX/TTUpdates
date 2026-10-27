@@ -16,7 +16,7 @@ from ..store import VideoItem
 from . import theme
 from .editor import PostEditor
 from .state import AppState
-from .widgets import account_badge, fmt_dur, label, panel, thumb_pixmap
+from .widgets import badge_for, fmt_dur, label, panel, thumb_pixmap
 
 ID_ROLE = Qt.UserRole + 1
 
@@ -316,7 +316,7 @@ class QueuePage(QWidget):
         self.empty.setVisible(not q)
         multi = len(self.state.accounts) > 1
         self.badge.setVisible(multi)
-        self.badge.setPixmap(account_badge(a.id, a.label, 24))
+        self.badge.setPixmap(badge_for(a, 24))
         self.empty.setText((f"Nothing is queued for {a.label} yet." if multi else "The queue is empty.") +
                            "\nSelect videos in the Library and click “" + ("Queue for…" if multi else "Add to queue") + "”.")
         queued = [i for i in q if i.status == "queued"]
@@ -495,11 +495,11 @@ class QueuePage(QWidget):
         if others:
             move = m.addMenu("Move to another account's queue")
             for a in others:
-                move.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label, lambda i=a.id: self.move_to_account(i))
+                move.addAction(QIcon(badge_for(a, 18)), a.label, lambda i=a.id: self.move_to_account(i))
             move.setEnabled(self.remove_btn.isEnabled())
             copy = m.addMenu("Also queue for")
             for a in others:
-                copy.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label, lambda i=a.id: self.copy_to_account(i))
+                copy.addAction(QIcon(badge_for(a, 18)), a.label, lambda i=a.id: self.copy_to_account(i))
         m.exec(self.list.viewport().mapToGlobal(pos))
 
     def move_to_account(self, account_id: str) -> None:

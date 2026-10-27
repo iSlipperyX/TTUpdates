@@ -119,7 +119,55 @@ def _release_from_json(data: dict) -> Release:
 
 
 def check(repo: str, current: str = VERSION) -> Release | None:
-    """The latest release if it's newer than `current`, else None. Uses an ETag so repeat checks are free."""
+    """The latest release if it's newer than `current`, else None. Uses an ETag so repeat checks are free.
+
+    The outcome, good or bad, is kept as state["result"] for the Updates tab. A newer release's
+    notes cover every version since `current`, not only the latest one.
+    """
+    try:
+        release = _check(repo, current)
+    except UpdateError as exc:
+        _record("error", str(exc))
+        raise
+    if release is None:
+        latest = load_state().get("latest")
+        _record("ok", f"Up to date ({current})." if latest else "No releases have been published yet.")
+        return None
+    release.notes = notes_since(repo, current, release)
+    _record("available", f"{release.version} is available.")
+    return release
+
+
+def _record(kind: str, text: str) -> None:
+    state = load_state()
+    state["result"] = {"at": time.time(), "kind": kind, "text": text}
+    save_state(state)
+
+
+def notes_since(repo: str, current: str, latest: Release) -> str:
+    """Release notes for every version after `current` up to `latest`, newest first.
+
+    Falls back to the latest release's own notes if the list can't be read.
+    """
+    try:
+        r = requests.get(f"{API_ROOT}/repos/{repo}/releases", params={"per_page": 30}, headers=_headers(), timeout=20)
+        items = r.json() if r.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        items = []
+    parts = []
+    for data in items if isinstance(items, list) else []:
+        if data.get("draft") or data.get("prerelease"):
+            continue
+        version = (data.get("tag_name") or "").lstrip("vV")
+        if is_newer(version, current) and not is_newer(version, latest.version):
+            parts.append((parse_version(version), version, (data.get("body") or "").strip()))
+    if len(parts) <= 1:
+        return latest.notes
+    parts.sort(reverse=True)
+    return "\n\n".join(f"# {version}\n\n{body or 'No notes.'}" for _, version, body in parts)
+
+
+def _check(repo: str, current: str) -> Release | None:
     repo = (repo or "").strip().strip("/")
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise UpdateError(f"'{repo}' isn't a GitHub repository like owner/name.")
@@ -299,6 +347,32 @@ def mark_started() -> None:
     """Tell the helper the new version came up (it rolls back if this never happens)."""
     try:
         (updates_dir() / MARKER_NAME).write_text(f"{VERSION} {os.getpid()}", encoding="ascii")
+    except OSError:
+        pass
+
+
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{70C03803-B73F-4A78-AF2E-A0653E15CF49}_is1"
+
+
+def sync_installed_version() -> None:
+    """Keep the version in Windows' list of installed apps right after an in-app update.
+
+    Only for a copy installed with TikTokManager-Setup.exe (whose AppId is in UNINSTALL_KEY);
+    a copy unzipped by hand has no entry there.
+    """
+    target = install_dir()
+    if os.name != "nt" or target is None:
+        return
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as k:
+            location = winreg.QueryValueEx(k, "InstallLocation")[0]
+            if Path(location).resolve() != target.resolve():
+                return  # that entry is for a different copy
+            if winreg.QueryValueEx(k, "DisplayVersion")[0] != VERSION:
+                winreg.SetValueEx(k, "DisplayVersion", 0, winreg.REG_SZ, VERSION)
     except OSError:
         pass
 

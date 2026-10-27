@@ -101,3 +101,20 @@ def check_upload(s: Settings, account: Account, log: Callable[[str], None], canc
     clip = blank_clip(cache_dir() / "upload-check.mp4") if full else None
     with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
         return b.check_upload_page(clip, expected_user=account.username)
+
+
+def apply_profile(s: Settings, account: Account, log: Callable[[str], None],
+                  cancelled: Callable[[], bool]) -> tuple[list[str], str]:
+    """Put the account's photo, name and bio (profile.py) on TikTok through its Edit profile box.
+
+    Uses the account's browser login whichever posting method is set: TikTok's API can't edit
+    profiles. Returns (what was changed, e.g. ["photo", "bio"], a note on anything TikTok wouldn't
+    change yet, such as a name changed less than 7 days ago); raises if TikTok didn't take it.
+    """
+    from ..profile import photo_path
+    from .browser import TikTokBrowser
+
+    with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
+        b.require_login()
+        return b.set_profile(name=account.profile_name, bio=account.profile_bio, photo=photo_path(account),
+                             expected_user=account.username)

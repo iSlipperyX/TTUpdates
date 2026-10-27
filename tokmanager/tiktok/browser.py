@@ -24,6 +24,7 @@ from ..store import Profile, TikTokVideo
 UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en"
 LOGIN_URL = "https://www.tiktok.com/login"
 HOME_URL = "https://www.tiktok.com/foryou?lang=en"
+PROFILE_URL = "https://www.tiktok.com/@{username}?lang=en"
 SESSION_COOKIES = ("sessionid", "sessionid_ss", "sid_tt")
 
 PRIVACY_LABELS = {
@@ -193,6 +194,7 @@ class TikTokBrowser:
                 username=user.get("uniqueId") or username,
                 nickname=user.get("nickname") or "",
                 avatar=user.get("avatarMedium") or user.get("avatarThumb") or "",
+                bio=user.get("signature") or "",
                 followers=_int(stats.get("followerCount")),
                 following=_int(stats.get("followingCount")),
                 likes=_int(stats.get("heartCount") or stats.get("heart")),
@@ -223,6 +225,144 @@ class TikTokBrowser:
             self.log("Profile numbers updated, but TikTok didn't send the video list (it sometimes asks for a "
                      "captcha). Try again with 'Show the browser' on.")
         return profile, list(videos.values())
+
+    # --- profile ----------------------------------------------------------------
+
+    def _profile_user(self, username: str) -> dict:
+        self.page.goto(PROFILE_URL.format(username=username), wait_until="domcontentloaded")
+        detail = self._rehydration().get("webapp.user-detail") or {}
+        return (detail.get("userInfo") or {}).get("user") or {}
+
+    def set_profile(self, name: str = "", bio: str = "", photo: Path | None = None,
+                    expected_user: str = "") -> tuple[list[str], str]:
+        """Fill in TikTok's Edit profile box: photo, name and bio (empty ones are left as they are).
+
+        Returns (what changed, a note about anything left out): TikTok only lets the name change
+        once every 7 days, and then shows it read-only; the rest is still saved. After saving, the
+        profile page is read again and a name or bio TikTok didn't take is an error.
+        """
+        self.check_user(expected_user)
+        username = expected_user.lstrip("@") or self.whoami()
+        if not username:
+            raise BrowserError("Couldn't tell which TikTok account this browser is logged in to. Log in again.")
+        before = self._profile_user(username)
+        todo = []
+        if photo:
+            todo.append("photo")
+        if name and name != (before.get("nickname") or ""):
+            todo.append("name")
+        if bio and bio != (before.get("signature") or ""):
+            todo.append("bio")
+        if not todo:
+            self.log("The profile on TikTok already matches.")
+            return [], ""
+        self._dismiss_popups()
+        edit = self._first_visible(['[data-e2e="edit-profile-entrance"]', 'button:has-text("Edit profile")'], timeout=15)
+        if edit is None:
+            self.screenshot("no-edit-profile")
+            raise BrowserError("Couldn't find the Edit profile button on your TikTok profile.")
+        edit.click()
+        box = self._first_visible(['[data-e2e="edit-profile-popup"]', '[role="dialog"][aria-label="Edit profile"]'],
+                                  timeout=15)
+        if box is None:
+            self.screenshot("no-edit-profile-box")
+            raise BrowserError("TikTok's Edit profile box didn't open.")
+
+        note = ""
+        if "name" in todo:
+            area = box.locator('[data-e2e="edit-profile-name-input"]')
+            field = area.locator("input")
+            if field.count() and field.first.is_visible():
+                self.log("Setting the name…")
+                field.first.fill(name)
+            else:  # locked: TikTok shows the name read-only with when it can change again
+                todo.remove("name")
+                tip = " ".join((area.first.inner_text(timeout=2000) if area.count() else "").split())
+                tip = tip.removeprefix(before.get("nickname") or "").strip()
+                note = tip or "TikTok isn't letting the name change right now."
+                self.log(f"⚠ Name not changed: {note}")
+        if "bio" in todo:
+            self.log("Setting the bio…")
+            field = box.locator('[data-e2e="edit-profile-bio-input"]')
+            if not field.count():
+                field = box.locator("textarea")
+            if not field.count():
+                raise BrowserError("Couldn't find the Bio field in TikTok's Edit profile box.")
+            field.first.fill(bio)
+        if "photo" in todo:  # last: its crop step opens on top of the box
+            self.log("Setting the profile photo…")
+            box.locator('input[type="file"]').first.set_input_files(str(photo))
+            crop = self._first_visible(['[role="dialog"]:has-text("Edit photo")'], timeout=20)
+            apply = crop.locator('button:has-text("Apply")') if crop else None
+            if apply is None or not apply.count():
+                self.screenshot("no-photo-apply")
+                raise BrowserError("TikTok didn't show its photo crop step, so nothing was saved.")
+            apply.first.click()
+            end = time.time() + 20
+            while time.time() < end and crop.is_visible():
+                self._sleep(0.5)
+        if not todo:
+            self._close_edit_box(box)
+            return [], note
+
+        save = box.locator('[data-e2e="edit-profile-save"]')
+        end = time.time() + 20
+        while time.time() < end and not (save.count() and save.first.is_enabled()):
+            self._sleep(0.5)
+        if not (save.count() and save.first.is_enabled()):
+            self.screenshot("profile-save-disabled")
+            self._close_edit_box(box)
+            raise BrowserError("TikTok's Save button stayed greyed out, so nothing was saved.")
+        save.first.click()
+        message = ""
+        end = time.time() + 30
+        while time.time() < end:
+            self._sleep(1)
+            message = message or self._toast_text()
+            if not box.is_visible():
+                break
+        else:
+            self.screenshot("profile-not-saved")
+            self._close_edit_box(box)
+            raise BrowserError("TikTok didn't save the profile" + (f": {message}" if message else "."))
+
+        after = self._profile_user(username)
+        missed = [what for what, want, got in (("name", name, after.get("nickname")), ("bio", bio, after.get("signature")))
+                  if what in todo and (got or "") != want]
+        if missed:
+            raise BrowserError(f"TikTok didn't take the new {' and '.join(missed)}"
+                               + (f": {message}" if message else "."))
+        if "photo" in todo and (after.get("avatarLarger") or "") == (before.get("avatarLarger") or ""):
+            self.log("⚠ TikTok's profile page doesn't show the new photo yet; new photos can take a few minutes.")
+        return todo, note
+
+    def _close_edit_box(self, box) -> None:
+        """Leave the Edit profile box without saving."""
+        try:
+            for sel in ('[data-e2e="edit-profile-cancel"]', '[data-e2e="edit-profile-close"]'):
+                btn = box.locator(sel)
+                if btn.count() and btn.first.is_visible():
+                    btn.first.click()
+                    break
+            self._sleep(1)
+            discard = self.page.locator('[role="dialog"] button:has-text("Discard")')
+            if discard.count() and discard.first.is_visible():
+                discard.first.click()
+        except Exception:
+            pass
+
+    def _toast_text(self) -> str:
+        """The text of a message TikTok is showing (e.g. why it refused a change), if any."""
+        for sel in ('[role="alert"]', '[class*="toast" i]', '[class*="Toast"]', '[data-e2e*="toast"]'):
+            try:
+                loc = self.page.locator(sel)
+                if loc.count() and loc.first.is_visible():
+                    text = " ".join((loc.first.inner_text(timeout=1000) or "").split())
+                    if text:
+                        return text[:200]
+            except Exception:
+                pass
+        return ""
 
     def _videos_from_grid(self, username: str) -> list[TikTokVideo]:
         """Fallback when TikTok withholds the JSON feed: read links and view counts off the video grid."""
