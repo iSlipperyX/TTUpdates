@@ -91,6 +91,7 @@ class Settings:
     # Ready to upload (ready.py): clips arrive from watched folders, you post them yourself
     watch_folders: list[str] = field(default_factory=list)  # e.g. ClipMonster's Automation folder
     watch_target: str = "library"  # library | spread (shared between accounts) | an account id
+    clipmonster_offered: str = ""  # the ClipMonster folder the app last offered to watch ("" = never asked)
     watch_ai: bool = False  # AI caption each imported clip (one Claude call per clip)
     remind_to_post: bool = True  # notify when a queued video's time comes (accounts with autopilot off)
     morning_summary: bool = True  # one notification a day: what's ready for each account
@@ -123,6 +124,9 @@ class Settings:
             return cls()
         known = {f.name for f in fields(cls)}
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
+        if isinstance(s.watch_folders, str):  # hand-edited, or a single folder written as text
+            s.watch_folders = [s.watch_folders]
+        s.watch_folders = [str(f) for f in s.watch_folders or [] if f]
         for name in SECRET_FIELDS:
             setattr(s, name, unprotect(getattr(s, name)))
         w = data.get("weights") or {}

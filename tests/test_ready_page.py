@@ -80,3 +80,50 @@ def test_settings_dialog_saves_the_ready_tab(state, app, tmp_path):
     assert state.settings.watch_folders == [str(tmp_path / "Automation")]
     assert state.settings.watch_target == state.active.id
     assert ready.import_watched(state.store, state.settings.watch_folders) == []  # already in the library
+
+
+def test_page_says_when_new_clips_go_to_the_library_and_can_queue_them(tmp_path, app):
+    from tokmanager.gui.ready_page import ReadyPage
+    from tokmanager.gui.state import AppState
+
+    st = AppState()
+    root = str(clipmonster_folder(tmp_path).parent)
+    st.settings.watch_folders, st.settings.watch_target = [root], "library"
+    ready.import_watched(st.store, [root])
+    st.watch_reports, st.watch_checked_at = ready.watch_report(st.store, [root]), 1.0
+    page = ReadyPage(st)
+    assert "go to the <b>Library</b>" in page.hint.text()
+    assert "2 clips brought in, 1 set aside by ClipMonster's quality check" in page.counts.text()
+    assert page.take_btn.isVisibleTo(page) and page.take_btn.text() == "Queue 2 new clips here"
+    assert "press “Queue 2 new clips here”" in page.empty.text()
+    page.take_new_clips()
+    assert [c.item.title for c in page.cards()] == ["good", "fine"] and not page.take_btn.isVisibleTo(page)
+    page._link("target-here")
+    assert st.settings.watch_target == st.active.id and "come in here every few minutes" in page.hint.text()
+
+
+def test_page_points_out_clipmonsters_folder_when_it_isnt_watched(tmp_path, app):
+    import json
+
+    from tokmanager.gui.ready_page import ReadyPage
+    from tokmanager.gui.state import AppState
+
+    auto = tmp_path / "TTVIDEOS"
+    auto.mkdir()
+    cm = tmp_path / "appdata" / "ClipMonster"
+    cm.mkdir(parents=True)
+    (cm / "settings.json").write_text(json.dumps({"auto_output_dir": auto.as_posix()}), encoding="utf-8")
+    page = ReadyPage(AppState())
+    asked = []
+    page.watch_clipmonster_requested.connect(lambda: asked.append(True))
+    assert "isn't watching" in page.hint.text() and "TTVIDEOS" in page.hint.text()
+    page._link("watch-cm")
+    assert asked == [True]
+
+
+def test_clipmonster_offer_lists_where_clips_can_go(tmp_path, app):
+    from tokmanager.gui.ready_page import ClipMonsterOffer
+
+    dlg = ClipMonsterOffer(None, tmp_path, [("a1", "@cats"), ("a2", "@dogs")], "a2")
+    assert dlg.target() == "a2"
+    assert [dlg.where.itemData(i) for i in range(dlg.where.count())] == ["a1", "a2", "spread", "library"]

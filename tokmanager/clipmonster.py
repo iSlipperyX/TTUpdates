@@ -59,12 +59,23 @@ def credit_line(channel: str) -> str:
     return f"🎥 {channel} on YouTube (CC BY)" if channel else ""
 
 
+def settings_path() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
+    return Path(base) / "ClipMonster" / "settings.json"
+
+
+def installed() -> bool:
+    """ClipMonster has been run on this PC (it saves its settings on first start)."""
+    return settings_path().is_file()
+
+
 def output_folders() -> list[Path]:
     """Where ClipMonster on this PC puts its clips (Automation's folder first), read from its settings."""
-    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
     try:
-        data = json.loads((Path(base) / "ClipMonster" / "settings.json").read_text(encoding="utf-8"))
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
         data = {}
     output = Path(data.get("output_dir") or Path.home() / "Videos" / "ClipMonster").expanduser()
     auto = Path(data["auto_output_dir"]).expanduser() if data.get("auto_output_dir") else output / "Automation"

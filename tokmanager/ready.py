@@ -11,12 +11,14 @@ Everything here is free of GUI code so it can be tested and run on worker thread
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import schedule
+from . import clipmonster, schedule
 from .accounts import Account, Accounts
 from .config import Settings
 from .store import Store, VideoItem
@@ -29,6 +31,109 @@ def import_watched(store: Store, folders: list[str], now: float | None = None) -
     """New, finished clips from the watched folders (missing folders are skipped)."""
     roots = [Path(f).expanduser() for f in folders if f and Path(f).expanduser().is_dir()]
     return store.add_paths(roots, watched=True, now=now) if roots else []
+
+
+def same_folder(a: str | Path, b: str | Path) -> bool:
+    """ClipMonster writes "C:/Users/…/TTVIDEOS", Windows' folder picker "C:\\Users\\…\\TTVIDEOS"."""
+    def norm(p) -> str:
+        return os.path.normcase(os.path.normpath(os.path.expanduser(str(p)))).replace("\\", "/").rstrip("/")
+    return norm(a) == norm(b)
+
+
+def watched(folders: list[str], path: str | Path) -> bool:
+    """`path` is one of the watched folders, or inside one."""
+    p = Path(os.path.expanduser(str(path)))
+    return any(same_folder(p, f) or any(same_folder(parent, f) for parent in p.parents) for f in folders if f)
+
+
+def clipmonster_unwatched(s: Settings) -> Path | None:
+    """ClipMonster's Automation folder when ClipMonster is set up here but that folder isn't watched.
+
+    ClipMonster can be told to save somewhere else at any time, so this is checked again
+    whenever the Ready page is shown, not only on first start.
+    """
+    if not clipmonster.installed():
+        return None
+    auto = clipmonster.output_folders()[0]
+    if not auto.is_dir():  # Automation hasn't made anything yet
+        return None
+    return None if watched(s.watch_folders, auto) else auto
+
+
+@dataclass
+class FolderReport:
+    """What one watched folder holds, as the Ready page tells it."""
+
+    folder: str
+    exists: bool = True
+    clips: int = 0  # finished videos found (ClipMonster's rejected ones not counted)
+    in_app: int = 0  # of those, in TikTok Manager's library (queued, posted or not)
+    rejected: int = 0  # set aside by ClipMonster's quality check (its _rejected folders)
+    removed: int = 0  # removed from the Library by you, so they stay out
+    waiting: int = 0  # still being written (or not finished long enough ago)
+
+
+def watch_report(store: Store, folders: list[str], now: float | None = None,
+                 settle: float = 60.0) -> list[FolderReport]:
+    """Count what's in each watched folder and what became of it. Read-only; safe on a worker thread."""
+    from .clipmonster import REJECTED_DIR, read_folder_index
+    from .media import VIDEO_EXTS
+    from .store import _key
+
+    now = time.time() if now is None else now
+    with store.lock:
+        by_path = {_key(i.path): i for i in store.items.values()}
+        ignored = set(store.ignored)
+    out = []
+    for folder in folders:
+        if not folder:
+            continue
+        root = Path(folder).expanduser()
+        r = FolderReport(folder=folder, exists=root.is_dir())
+        out.append(r)
+        if not r.exists:
+            continue
+        indexes: dict[Path, dict] = {}
+        try:
+            files = sorted(f for f in root.rglob("*") if f.suffix.lower() in VIDEO_EXTS
+                           and ".downloads" not in f.parts and not f.name.startswith("."))
+        except OSError:
+            r.exists = False
+            continue
+        for f in files:
+            if REJECTED_DIR in f.relative_to(root).parts:
+                r.rejected += 1
+                continue
+            if f.parent not in indexes:
+                indexes[f.parent] = read_folder_index(f.parent)
+            meta = indexes[f.parent].get(f.name)
+            if meta and meta.get("rejected"):
+                r.rejected += 1
+                continue
+            key = _key(f)
+            if key in by_path:
+                r.clips += 1
+                r.in_app += 1
+            elif key in ignored:
+                r.clips += 1
+                r.removed += 1
+            else:
+                try:
+                    fresh = not meta and now - f.stat().st_mtime < settle
+                except OSError:
+                    continue
+                if fresh:
+                    r.waiting += 1
+                else:
+                    r.clips += 1  # finished but not brought in yet: the next check takes it
+    return out
+
+
+def unqueued_watched(store: Store) -> list[VideoItem]:
+    """Clips a watched folder brought in that are still only in the Library (not queued or posted)."""
+    with store.lock:
+        return [i for i in store.items.values()
+                if i.imported_by == "watch" and i.status == "new" and not i.account and i.exists()]
 
 
 def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoItem], target: str) -> dict[str, int]:

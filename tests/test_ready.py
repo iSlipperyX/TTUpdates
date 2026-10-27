@@ -224,3 +224,63 @@ def test_undo_mark_posted_puts_it_back_on_top(tmp_path):
     assert ready.unmark_posted(store, second.id, a.id)
     assert ready.ready(store, a.id)[0] is second and second.status == "queued" and second.posted_at is None
     assert not ready.unmark_posted(store, second.id, a.id)  # it isn't posted
+
+
+def test_watch_report_counts_what_came_in_and_what_clipmonster_set_aside(tmp_path):
+    folder = clipmonster_folder(tmp_path)
+    late = tmp_path / "Automation" / "late.mp4"
+    late.write_bytes(b"x")
+    os.utime(late, (NOW - 5, NOW - 5))  # still being written
+    store = Store(tmp_path / "lib.json")
+    root = str(tmp_path / "Automation")
+    [before] = ready.watch_report(store, [root], now=NOW)
+    assert (before.clips, before.in_app, before.rejected, before.waiting) == (2, 0, 1, 1)
+    items = ready.import_watched(store, [root], now=NOW)
+    store.remove([next(i.id for i in items if i.title == "fine")])
+    [after] = ready.watch_report(store, [root, ""], now=NOW)
+    assert (after.clips, after.in_app, after.removed, after.rejected, after.waiting) == (2, 1, 1, 1, 1)
+    [gone] = ready.watch_report(store, [str(tmp_path / "nope")], now=NOW)
+    assert not gone.exists
+    assert folder.is_dir()
+
+
+def test_watched_folder_paths_match_however_they_are_written(tmp_path):
+    assert ready.same_folder(f"{tmp_path}/TTVIDEOS/", str(tmp_path / "TTVIDEOS"))
+    assert ready.watched([str(tmp_path / "TTVIDEOS")], tmp_path / "TTVIDEOS" / "zanny")
+    assert not ready.watched([str(tmp_path / "TTVIDEOS")], tmp_path / "Other")
+    if os.name == "nt":
+        assert ready.same_folder("C:/Users/J/OneDrive/Documents/TTVIDEOS", r"c:\users\j\onedrive\documents\ttvideos")
+
+
+def test_clipmonster_folder_not_watched_is_noticed(tmp_path):
+    s = Settings()
+    assert ready.clipmonster_unwatched(s) is None  # ClipMonster isn't on this PC
+    cm = tmp_path / "appdata" / "ClipMonster"
+    cm.mkdir(parents=True)
+    auto = tmp_path / "OneDrive" / "Documents" / "TTVIDEOS"
+    (cm / "settings.json").write_text(json.dumps({"output_dir": str(tmp_path / "Videos"),
+                                                  "auto_output_dir": auto.as_posix()}), encoding="utf-8")
+    assert ready.clipmonster_unwatched(s) is None  # Automation hasn't made anything yet
+    auto.mkdir(parents=True)
+    assert ready.clipmonster_unwatched(s) == auto
+    s.watch_folders = [str(tmp_path / "Videos" / "Automation")]  # the default place, not where it saves now
+    assert ready.clipmonster_unwatched(s) == auto
+    s.watch_folders.append(str(auto) + os.sep)
+    assert ready.clipmonster_unwatched(s) is None
+
+
+def test_clips_only_in_the_library_can_be_found_to_queue(tmp_path):
+    folder = clipmonster_folder(tmp_path)
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")], now=NOW)
+    store.add_paths([folder / "loose.mp4"])  # not from a watched folder: never offered
+    assert sorted(i.title for i in ready.unqueued_watched(store)) == ["fine", "good"]
+    store.enqueue([items[0].id], "acc1")
+    assert len(ready.unqueued_watched(store)) == 1
+
+
+def test_a_single_watch_folder_saved_as_text_still_works(tmp_path):
+    path = Settings.path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"watch_folders": str(tmp_path / "TTVIDEOS")}), encoding="utf-8")
+    assert Settings.load().watch_folders == [str(tmp_path / "TTVIDEOS")]
