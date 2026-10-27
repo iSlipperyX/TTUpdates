@@ -92,8 +92,8 @@ Weights are adjustable in **Settings → Scoring**.
 
 **Browser (default, recommended).** The app opens TikTok Studio in your own Microsoft Edge (or Chrome)
 using a separate browser profile, uploads the file, types the caption and hashtags, sets "who can
-watch" and comment/duet/stitch, and clicks Post. You log in yourself once per account (**Account → Log in**);
-the app never sees your password. Leave **Show the browser window** on: TikTok is less likely to block a
+watch" and comment/duet/stitch, and clicks Post. You log in yourself once per account (**Account → Log in**
+opens a normal Edge window; it closes by itself once you're logged in); the app never sees your password. Leave **Show the browser window** on: TikTok is less likely to block a
 visible browser, and you can solve a captcha if one appears.
 
 **Official TikTok API (optional).** For people with their own app at developers.tiktok.com. Paste the

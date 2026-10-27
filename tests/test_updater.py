@@ -185,3 +185,26 @@ def test_stage_rejects_unsafe_or_wrong_zips(tmp_path):
 
 def test_helper_script_is_ascii():
     updater.HELPER_PS1.encode("ascii")  # Windows PowerShell 5.1 misreads BOM-less UTF-8
+
+
+def test_helper_gets_a_hidden_console_not_a_detached_process(tmp_path, monkeypatch):
+    """Windows PowerShell 5.1 started with DETACHED_PROCESS exits at once without running the
+    script: up to 1.2.0 that made every in-app update close the app and install nothing."""
+    import subprocess
+
+    for name, value in (("DETACHED_PROCESS", 0x8), ("CREATE_NEW_PROCESS_GROUP", 0x200),
+                        ("CREATE_BREAKAWAY_FROM_JOB", 0x1000000), ("CREATE_NO_WINDOW", 0x8000000)):
+        monkeypatch.setattr(subprocess, name, value, raising=False)
+    monkeypatch.setattr(updater, "updates_dir", lambda: tmp_path)
+    calls = []
+
+    def fake_popen(args, creationflags=0, **kw):
+        calls.append(creationflags)
+        if creationflags & 0x1000000:
+            raise OSError("breakaway not allowed")
+
+    monkeypatch.setattr(updater.subprocess, "Popen", fake_popen)
+    updater.launch_helper(tmp_path / "new", tmp_path / "app", "9.9.9", tray=False)
+    assert calls == [0x8000000 | 0x200 | 0x1000000, 0x8000000 | 0x200]
+    assert not any(flags & 0x8 for flags in calls)
+    assert 'try { Start-App @("--updated-from"' in (tmp_path / "apply-update.ps1").read_text(encoding="ascii")
