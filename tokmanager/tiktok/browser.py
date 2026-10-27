@@ -13,6 +13,7 @@ set, the upload still goes ahead and the log says what was skipped.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -26,6 +27,15 @@ LOGIN_URL = "https://www.tiktok.com/login"
 HOME_URL = "https://www.tiktok.com/foryou?lang=en"
 PROFILE_URL = "https://www.tiktok.com/@{username}?lang=en"
 SESSION_COOKIES = ("sessionid", "sessionid_ss", "sid_tt")
+# Playwright adds --no-sandbox unless told otherwise, and Edge/Chrome then show "You are using an
+# unsupported command-line flag" (and run without their sandbox). Windows doesn't need it; Linux
+# test machines running as root do. --disable-blink-features is on the same warning list, so
+# navigator.webdriver is hidden by WEBDRIVER_SCRIPT instead.
+SANDBOX = os.name == "nt"
+# A normal browser answers navigator.webdriver with false (on Navigator.prototype); one that's
+# remote-controlled answers true. Make the controlled one answer like a normal one.
+WEBDRIVER_SCRIPT = ("Object.defineProperty(Navigator.prototype, 'webdriver', "
+                    "{get: () => false, configurable: true, enumerable: true});")
 
 PRIVACY_LABELS = {
     "public": ("Everyone", "Public"),
@@ -64,14 +74,8 @@ class TikTokBrowser:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
-        args = ["--disable-blink-features=AutomationControlled", "--disable-infobars",
-                "--no-first-run", "--no-default-browser-check"]
         try:
-            self.ctx = self._pw.chromium.launch_persistent_context(
-                str(self.profile_dir), channel=self.s.browser_channel or "msedge",
-                headless=self.headless, args=args, ignore_default_args=["--enable-automation"],
-                viewport={"width": 1280, "height": 900}, locale="en-US",
-            )
+            self.ctx = self._pw.chromium.launch_persistent_context(str(self.profile_dir), **self.launch_options())
         except Exception as exc:
             self._pw.stop()
             msg = str(exc)
@@ -81,11 +85,17 @@ class TikTokBrowser:
                 raise BrowserError(f"Couldn't find {self.s.browser_channel}. Pick another browser in Settings.") from exc
             raise
         self.ctx.set_default_timeout(20_000)
-        # Hide the most obvious automation flag from page scripts.
-        self.ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        self.ctx.add_init_script(WEBDRIVER_SCRIPT)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.page.on("dialog", lambda d: d.accept())
         return self
+
+    def launch_options(self) -> dict:
+        """No switch that Edge/Chrome warn about (see SANDBOX) and no "controlled by automated software" bar."""
+        args = ["--no-first-run", "--no-default-browser-check"]
+        return dict(channel=self.s.browser_channel or "msedge", headless=self.headless, args=args,
+                    ignore_default_args=["--enable-automation"], chromium_sandbox=SANDBOX,
+                    viewport={"width": 1280, "height": 900}, locale="en-US")
 
     def __exit__(self, *exc) -> None:
         try:

@@ -10,9 +10,9 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
-                               QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+                               QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import clipmonster, diagnostics, ready, updater
+from .. import clipmonster, diagnostics, phone, ready, updater
 from ..config import VERSION, Settings, Weights, app_dir
 from ..scoring import PART_LABELS
 from . import theme
@@ -28,6 +28,7 @@ def _combo(options: list[tuple[str, str]], current: str) -> QComboBox:
 
 
 def _form(tab: QTabWidget, title: str, intro: str = "") -> QFormLayout:
+    """A tab holding a form; it scrolls when the window is smaller than the form, instead of squashing it."""
     w = QWidget()
     lay = QVBoxLayout(w)
     lay.setContentsMargins(16, 14, 16, 14)
@@ -38,7 +39,11 @@ def _form(tab: QTabWidget, title: str, intro: str = "") -> QFormLayout:
     form.setVerticalSpacing(9)
     lay.addLayout(form)
     lay.addStretch(1)
-    tab.addTab(w, title)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setWidget(w)
+    tab.addTab(scroll, title)
     return form
 
 
@@ -47,8 +52,9 @@ class SettingsDialog(QDialog):
                  accounts: list[tuple[str, str]] | None = None, tab: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumSize(620, 560)
+        self.setMinimumSize(760, 620)
         self.s = settings
+        self.setup_requested = False  # "Run setup again" was pressed: the main window opens it after saving
         root = QVBoxLayout(self)
         tabs = QTabWidget()
         self.tabs = tabs
@@ -237,7 +243,7 @@ class SettingsDialog(QDialog):
         add = QPushButton("Add folder…")
         add.clicked.connect(self._add_watch_folder)
         cm = clipmonster.output_folders()[0]
-        add_cm = QPushButton("Add ClipMonster's Automation folder")
+        add_cm = QPushButton("Add ClipMonster's folder")
         add_cm.setToolTip(str(cm))
         add_cm.clicked.connect(lambda: self._add_watch(str(cm)))
         remove = QPushButton("Remove")
@@ -265,7 +271,7 @@ class SettingsDialog(QDialog):
                                    "the key on the AI tab. Clips that already have hashtags keep them")
         self.watch_tags.setChecked(settings.watch_hashtags)
         f.addRow("", self.watch_tags)
-        self.remind = QCheckBox("Remind me when it's time to post a video (accounts without autopilot)")
+        self.remind = QCheckBox("Remind me when it's time to post a video (accounts I post to by hand)")
         self.remind.setChecked(settings.remind_to_post)
         f.addRow("", self.remind)
         self.morning = QCheckBox("Each morning, tell me what's ready for each account")
@@ -286,6 +292,35 @@ class SettingsDialog(QDialog):
         row.addWidget(browse)
         f.addRow("“Copy to a folder” goes to", row)
 
+        self.phone_folder = QLineEdit(settings.phone_folder)
+        self.phone_folder.setPlaceholderText("Off")
+        self.phone_folder.setToolTip("The next 24 hours' clips for the accounts you post to by hand wait here, in posting "
+                                     "order, each with a .txt of its caption. Posted ones are taken out by themselves")
+        row = QHBoxLayout()
+        row.addWidget(self.phone_folder, 1)
+        onedrive = phone.suggested_folder()
+        if onedrive is not None:
+            use = QPushButton("Use OneDrive")
+            use.setToolTip(str(onedrive))
+            use.clicked.connect(lambda: self.phone_folder.setText(str(onedrive)))
+            row.addWidget(use)
+        pick = QPushButton("…")
+        pick.setFixedWidth(34)
+        pick.clicked.connect(self._pick_phone_folder)
+        off = QPushButton("Off")
+        off.clicked.connect(self.phone_folder.clear)
+        row.addWidget(pick)
+        row.addWidget(off)
+        f.addRow("Phone folder", row)
+        f.addRow("", label("Pick a folder that syncs to your phone (OneDrive, say). Open it in the OneDrive app, "
+                           "save a clip, paste its caption into TikTok, then delete it there or mark it posted "
+                           "here. Clips you delete there aren't copied again.", "muted", wrap=True))
+        again = QPushButton("Run first-run setup again")
+        again.setToolTip("Account and login, where clips come from, how you post and the phone folder, one step "
+                         "at a time")
+        again.clicked.connect(self._run_setup)
+        f.addRow("", again)
+
     def _add_watch(self, path: str) -> None:
         existing = {self.watch_list.item(i).text() for i in range(self.watch_list.count())}
         if path and path not in existing:
@@ -295,6 +330,16 @@ class SettingsDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "Watch a folder for new clips")
         if folder:
             self._add_watch(folder)
+
+    def _pick_phone_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Keep the next clips for my phone in",
+                                                  self.phone_folder.text() or str(phone.onedrive() or ""))
+        if folder:
+            self.phone_folder.setText(folder)
+
+    def _run_setup(self) -> None:
+        self.setup_requested = True
+        self.accept()
 
     def _pick_ready_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Copy ready videos to", self.ready_folder.text())
@@ -318,7 +363,6 @@ class SettingsDialog(QDialog):
         s.minimize_to_tray = self.tray.isChecked()
         s.start_with_windows = self.startup.isChecked()
         s.ai_api_key = self.ai_key.text().strip()
-        s.ai_enabled = bool(s.ai_api_key)
         s.ai_model = self.ai_model.currentData()
         s.ai_hashtag_count = self.tag_count.value()
         s.api_client_key = self.client_key.text().strip()
@@ -333,6 +377,7 @@ class SettingsDialog(QDialog):
         s.morning_summary = self.morning.isChecked()
         s.share_results = self.share.isChecked()
         s.ready_folder = self.ready_folder.text().strip()
+        s.phone_folder = self.phone_folder.text().strip()
         self._apply_update_fields()
 
     def _apply_update_fields(self) -> None:

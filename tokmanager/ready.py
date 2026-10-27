@@ -78,6 +78,7 @@ def watch_report(store: Store, folders: list[str], now: float | None = None,
     """Count what's in each watched folder and what became of it. Read-only; safe on a worker thread."""
     from .clipmonster import REJECTED_DIR, read_folder_index
     from .media import VIDEO_EXTS
+    from .phone import is_copy
     from .store import _key
 
     now = time.time() if now is None else now
@@ -94,9 +95,10 @@ def watch_report(store: Store, folders: list[str], now: float | None = None,
         if not r.exists:
             continue
         indexes: dict[Path, dict] = {}
+        copies: dict[Path, set[str]] = {}
         try:
             files = sorted(f for f in root.rglob("*") if f.suffix.lower() in VIDEO_EXTS
-                           and ".downloads" not in f.parts and not f.name.startswith("."))
+                           and ".downloads" not in f.parts and not f.name.startswith(".") and not is_copy(f, copies))
         except OSError:
             r.exists = False
             continue
@@ -199,8 +201,9 @@ def default_ready_folder() -> Path:
     return Path.home() / "Videos" / "TikTok Ready"
 
 
-def _safe(text: str, limit: int = 60) -> str:
-    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text).strip(" .")
+def safe_name(text: str, limit: int = 60) -> str:
+    """`text` as part of a Windows file name: no characters Windows refuses, on one line, not too long."""
+    text = " ".join(re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", text).split()).strip(" .")
     return text[:limit].rstrip(" .") or "video"
 
 
@@ -210,12 +213,12 @@ def export_ready(store: Store, account: Account, s: Settings, root: Path | None 
     caption beside each: handy for posting from a phone through a synced folder."""
     now = time.time() if now is None else now
     folder = Path(root or s.ready_folder or default_ready_folder()).expanduser()
-    folder = folder / _safe(account.label, 40) / dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    folder = folder / safe_name(account.label, 40) / dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     folder.mkdir(parents=True, exist_ok=True)
     n = 0
     for pos, it in enumerate((i for i in ready(store, account.id) if i.exists()), 1):
         src = Path(it.path)
-        dest = folder / f"{pos:02d} - {_safe(it.name)}{src.suffix.lower()}"
+        dest = folder / f"{pos:02d} - {safe_name(it.headline)}{src.suffix.lower()}"
         if not dest.exists() or dest.stat().st_size != src.stat().st_size:
             shutil.copy2(src, dest)
         when = f"Post at: {schedule.fmt_when(it.planned_at, now)}\n\n" if it.planned_at else ""

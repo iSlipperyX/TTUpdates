@@ -15,7 +15,6 @@ from .config import app_dir
 from .media import VIDEO_EXTS
 
 # Item status lifecycle: new -> queued -> uploading -> posted | failed
-STATUSES = ("new", "queued", "uploading", "posted", "failed")
 # last_error of a video whose upload was cut off by the app closing. It may be on TikTok already,
 # so it is never retried by itself; the next stats refresh marks it posted if it finds it there.
 INTERRUPTED = ("The app closed while this was uploading, so it may have been posted. "
@@ -79,6 +78,12 @@ class VideoItem:
     @property
     def name(self) -> str:
         return self.title or Path(self.path).stem
+
+    @property
+    def headline(self) -> str:
+        """What to call the clip where you pick and post it: ClipMonster's hook when it wrote one
+        (rather than a file name like "01 - 1-37 - clip"), else the title."""
+        return " ".join(self.hook.split()) or self.name
 
     def exists(self) -> bool:
         return Path(self.path).is_file()
@@ -243,18 +248,20 @@ class Store:
         brings a removed file back.
         """
         from .clipmonster import REJECTED_DIR, credit_line, needs_credit, read_folder_index
+        from .phone import is_copy
 
         now = time.time() if now is None else now
         with self.lock:
             known = {_key(i.path) for i in self.items.values()}
             added: list[VideoItem] = []
             files: list[Path] = []
+            copies: dict[Path, set[str]] = {}
             for p in paths:
                 p = Path(p)
-                if p.is_dir():
+                if p.is_dir():  # not the phone folder's copies, if it's in there
                     files += sorted(f for f in p.rglob("*") if f.suffix.lower() in VIDEO_EXTS
                                     and ".downloads" not in f.parts and REJECTED_DIR not in f.parts
-                                    and not f.name.startswith("."))
+                                    and not f.name.startswith(".") and not is_copy(f, copies))
                 elif p.suffix.lower() in VIDEO_EXTS:
                     files.append(p)
             index_cache: dict[Path, dict] = {}

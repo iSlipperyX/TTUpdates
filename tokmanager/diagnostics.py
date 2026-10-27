@@ -52,13 +52,14 @@ def _tail(path: Path, lines: int) -> str:
 
 def report(log_lines: int = 60) -> str:
     """A plain-text summary for a bug report: versions, setup, recent log and the latest crash."""
-    from . import updater
+    from . import ai, updater
 
     s = Settings.load()
     try:
         from .accounts import Accounts
 
-        n_accounts = str(len(Accounts.load(s)))
+        accounts = list(Accounts.load(s))
+        n_accounts = f"{len(accounts)} ({sum(a.autopilot for a in accounts)} on autopilot)"
     except Exception as exc:  # the report must work even when the app's files are the problem
         n_accounts = f"unknown ({exc})"
     frozen = "installed app" if getattr(sys, "frozen", False) else "running from source"
@@ -66,7 +67,8 @@ def report(log_lines: int = 60) -> str:
         f"TikTok Manager {VERSION} ({frozen})",
         f"Windows: {platform.platform()}  Python {platform.python_version()}",
         f"Upload method: {s.upload_method}, browser: {s.browser_channel}, accounts: {n_accounts}",
-        f"AI: {'on' if s.ai_enabled else 'off'}, watched folders: {len(s.watch_folders)}, "
+        f"AI key: {'yes' if ai.has_key(s) else 'no'}, watched folders: {len(s.watch_folders)}, "
+        f"phone folder: {'on' if s.phone_folder else 'off'}, setup done: {'yes' if s.setup_done else 'no'}, "
         f"auto updates: {'install' if s.auto_install_updates else 'check' if s.auto_check_updates else 'off'}",
         "",
         "--- last self-test ---",
@@ -104,9 +106,12 @@ def run() -> str:
     def browser():
         from playwright.sync_api import sync_playwright
 
+        from .tiktok.browser import SANDBOX
+
         s = Settings.load()
         with sync_playwright() as pw:
-            b = pw.chromium.launch(channel=s.browser_channel or "msedge", headless=True)
+            b = pw.chromium.launch(channel=s.browser_channel or "msedge", headless=True,
+                                   chromium_sandbox=SANDBOX)
             page = b.new_page()
             page.set_content("<p id=x>ok</p>")
             text = page.locator("#x").inner_text()

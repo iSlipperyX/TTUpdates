@@ -38,6 +38,14 @@ PER_ACCOUNT = {
     "niche": "ai_niche",
 }
 
+# How an account posts (Account.autopilot): (value, button text, what it means)
+POSTING_MODES = (
+    ("hand", "✋ By hand", "You post each video yourself from the Ready page, with its caption ready to copy. "
+                          "A reminder says when each one's time comes."),
+    ("autopilot", "🤖 Autopilot", "TikTok Manager posts each video by itself when its time comes, through the "
+                                 "account's TikTok login. Keep it running (it can sit in the system tray)."),
+)
+
 
 @dataclass
 class Account:
@@ -80,6 +88,11 @@ class Account:
         if self.name.strip():
             return self.name.strip()
         return f"@{self.username}" if self.username else "New account"
+
+    @property
+    def mode(self) -> str:
+        """How the account posts: "autopilot" or "hand" (see POSTING_MODES)."""
+        return "autopilot" if self.autopilot else "hand"
 
     @property
     def handle(self) -> str:

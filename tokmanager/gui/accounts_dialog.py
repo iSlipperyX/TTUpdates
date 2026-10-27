@@ -1,6 +1,6 @@
 """Manage accounts: add, rename, reorder and remove TikTok accounts and set each one's posting defaults.
 
-Changes are saved as they're made. Each account's schedule and autopilot switch are on the Queue page.
+Changes are saved as they're made. Each account's schedule is on the Queue page.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout)
 
 from .. import profile, schedule
-from ..accounts import Account
+from ..accounts import POSTING_MODES, Account
 from ..tiktok import normalize_hashtags
 from .state import AppState
 from .widgets import badge_for, label, panel
@@ -21,7 +21,7 @@ PRIVACY = [("public", "Everyone"), ("friends", "Friends"), ("private", "Only me"
 
 
 def account_status(state: AppState, a: Account) -> str:
-    """'Logged in · 4 queued · autopilot on, next Today 15:00' for lists and menus."""
+    """'Logged in · 4 queued · autopilot, next Today 15:00' for lists and menus."""
     parts = []
     if state.settings.upload_method == "api":
         from ..tiktok.api import Tokens
@@ -32,9 +32,8 @@ def account_status(state: AppState, a: Account) -> str:
     q = [i for i in state.store.queue(a.id) if i.status == "queued"]
     failed = sum(1 for i in state.store.queue(a.id) if i.status == "failed")
     parts.append(f"{len(q)} queued" + (f", {failed} failed" if failed else ""))
-    if a.autopilot:
-        nxt = min((i.planned_at for i in q if i.planned_at), default=None)
-        parts.append("autopilot on" + (f", next {schedule.fmt_when(nxt)}" if nxt else ""))
+    nxt = min((i.planned_at for i in q if i.planned_at), default=None)
+    parts.append(("autopilot" if a.autopilot else "by hand") + (f", next {schedule.fmt_when(nxt)}" if nxt else ""))
     return " · ".join(parts)
 
 
@@ -46,7 +45,7 @@ class AccountsDialog(QDialog):
         super().__init__(parent)
         self.state = state
         self.setWindowTitle("Accounts")
-        self.setMinimumSize(760, 460)
+        self.setMinimumSize(780, 520)
         self._loading = False
         root = QVBoxLayout(self)
         root.addWidget(label("Each account has its own TikTok login, queue, schedule and stats. The video library "
@@ -101,6 +100,10 @@ class AccountsDialog(QDialog):
         self.privacy = QComboBox()
         for value, text in PRIVACY:
             self.privacy.addItem(text, value)
+        self.mode = QComboBox()
+        for value, text, tip in POSTING_MODES:
+            self.mode.addItem(text, value)
+            self.mode.setItemData(self.mode.count() - 1, tip, Qt.ToolTipRole)
         self.hashtags = QLineEdit()
         self.hashtags.setPlaceholderText("#fyp #yourniche")
         self.hashtags.setToolTip("Added to every post from this account (tags already in the caption aren't repeated)")
@@ -109,6 +112,7 @@ class AccountsDialog(QDialog):
         self.niche.setToolTip("Helps AI captions and ratings fit this account's audience")
         form.addRow("Name", self.name)
         form.addRow("TikTok @", self.username)
+        form.addRow("Posting", self.mode)
         form.addRow("Who can watch", self.privacy)
         form.addRow("Always add hashtags", self.hashtags)
         form.addRow("Niche / audience", self.niche)
@@ -136,6 +140,7 @@ class AccountsDialog(QDialog):
         self.hashtags.editingFinished.connect(self._tidy_tags)
         self.username.editingFinished.connect(self._check_username)
         self.privacy.currentIndexChanged.connect(self._edited)
+        self.mode.currentIndexChanged.connect(self._mode_picked)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
@@ -202,14 +207,17 @@ class AccountsDialog(QDialog):
         self.name.setText(a.name)
         self.username.setText(a.username)
         self.privacy.setCurrentIndex(max(0, self.privacy.findData(a.default_privacy)))
+        self.mode.setCurrentIndex(max(0, self.mode.findData(a.mode)))
+        self.mode.setToolTip(dict((v, t) for v, _, t in POSTING_MODES)[a.mode])
         self.hashtags.setText(a.default_hashtags)
         self.niche.setText(a.niche)
         self.profile_note.setText(profile.status(a))
         s = a.apply(self.state.settings)
         slots = ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(s))
-        self.schedule_note.setText(f"Schedule: {a.posts_per_day} a day at {slots}, at least {a.min_gap_minutes} min "
-                                   f"apart. Autopilot is {'on' if a.autopilot else 'off'}. Change these on the "
-                                   "Queue page while this account is shown.")
+        what = "reminders" if not a.autopilot and self.state.settings.remind_to_post else "posts"
+        self.schedule_note.setText(f"Schedule: {a.posts_per_day} {what} a day at {slots}, at least "
+                                   f"{a.min_gap_minutes} min apart. Change it on the Queue page while this account "
+                                   "is shown.")
         self._loading = False
         self._update_buttons()
 
@@ -230,6 +238,18 @@ class AccountsDialog(QDialog):
             self.state.accounts_edited()
         finally:
             self._saving = False
+
+    def _mode_picked(self) -> None:
+        a = self.selected_account()
+        if self._loading or not a:
+            return
+        self._saving = True
+        try:
+            self.state.set_autopilot(a.id, self.mode.currentData() == "autopilot")
+        finally:
+            self._saving = False
+        self._show_selected()
+        self._refresh_rows()
 
     def _tidy_tags(self) -> None:
         tidy = normalize_hashtags(self.hashtags.text())

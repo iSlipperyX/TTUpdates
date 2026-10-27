@@ -6,8 +6,8 @@ from functools import lru_cache
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QStyledItemDelegate,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+                               QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from ..scoring import PART_LABELS, grade
 from . import theme
@@ -29,6 +29,11 @@ def fmt_dur(sec: float) -> str:
     return f"{sec // 60}:{sec % 60:02d}"
 
 
+def short(text: str, limit: int = 40) -> str:
+    """Text cut down to `limit` characters with an ellipsis, e.g. a clip's hook in a one-line label."""
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 def label(text: str = "", obj: str = "", wrap: bool = False) -> QLabel:
     lab = QLabel(text)
     if obj:
@@ -41,6 +46,37 @@ def panel() -> QFrame:
     f = QFrame()
     f.setObjectName("panel")
     return f
+
+
+class Segmented(QWidget):
+    """A row of joined toggle buttons, one of which is on: `options` are (value, text, tooltip)."""
+
+    def __init__(self, options: list[tuple[str, str, str]], on_pick=None):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.group = QButtonGroup(self)
+        self.buttons: dict[str, QPushButton] = {}
+        for n, (value, text, tip) in enumerate(options):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.setObjectName("segFirst" if n == 0 else "segLast" if n == len(options) - 1 else "segMid")
+            self.group.addButton(b)
+            self.buttons[value] = b
+            lay.addWidget(b)
+            if on_pick:
+                b.clicked.connect(lambda _=False, v=value: on_pick(v))
+        lay.addStretch(1)
+
+    def value(self) -> str:
+        return next((v for v, b in self.buttons.items() if b.isChecked()), "")
+
+    def set_value(self, value: str) -> None:
+        """Show `value` as picked, without calling on_pick."""
+        if value in self.buttons:
+            self.buttons[value].setChecked(True)
 
 
 @lru_cache(maxsize=512)
@@ -293,19 +329,3 @@ def account_badge(account_id: str, text: str, size: int = 22) -> QPixmap:
     p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, letter)
     p.end()
     return pm
-
-
-def hbox(*widgets, spacing: int = 8, margins=(0, 0, 0, 0)) -> QHBoxLayout:
-    lay = QHBoxLayout()
-    lay.setSpacing(spacing)
-    lay.setContentsMargins(*margins)
-    for w in widgets:
-        if w is None:
-            lay.addStretch(1)
-        elif isinstance(w, int):
-            lay.addSpacing(w)
-        elif isinstance(w, QWidget):
-            lay.addWidget(w)
-        else:
-            lay.addLayout(w)
-    return lay
