@@ -238,6 +238,11 @@ class SettingsDialog(QDialog):
         self.morning = QCheckBox("Each morning, tell me what's ready for each account")
         self.morning.setChecked(settings.morning_summary)
         f.addRow("", self.morning)
+        self.share = QCheckBox("Tell ClipMonster how its clips do, so it picks and writes hooks like the hits")
+        self.share.setToolTip("After each stats refresh, views of clips that are 2+ days old go to "
+                              "ClipMonster's results.json. Nothing leaves this PC")
+        self.share.setChecked(settings.share_results)
+        f.addRow("", self.share)
         self.ready_folder = QLineEdit(settings.ready_folder)
         self.ready_folder.setPlaceholderText(str(ready.default_ready_folder()))
         browse = QPushButton("…")
@@ -292,6 +297,7 @@ class SettingsDialog(QDialog):
         s.watch_ai = self.watch_ai.isChecked()
         s.remind_to_post = self.remind.isChecked()
         s.morning_summary = self.morning.isChecked()
+        s.share_results = self.share.isChecked()
         s.ready_folder = self.ready_folder.text().strip()
         self._apply_update_fields()
 

@@ -97,6 +97,7 @@ class Settings:
     morning_summary: bool = True  # one notification a day: what's ready for each account
     ready_folder: str = ""  # "" = Videos\TikTok Ready; where "Copy to a folder" puts clips + caption files
     last_summary_day: str = ""
+    share_results: bool = True  # results.py: tell ClipMonster how its clips did (results.json)
     # Official TikTok API (optional, needs your own developer app)
     api_client_key: str = ""
     api_client_secret: str = ""

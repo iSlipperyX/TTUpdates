@@ -136,6 +136,16 @@ def refresh_account(store: Store, s: Settings, account: Account, log: Log, cance
     store.update_tiktok_videos(account.id, videos)
     store.save()
     log(f"{account.handle} refreshed: {profile.followers:,} followers, {len(videos)} videos read.")
+    if s.share_results:
+        from . import results
+
+        try:
+            n = results.share(store)
+        except OSError as exc:
+            log(f"Couldn't share results with ClipMonster: {exc}")
+        else:
+            if n > 0:
+                log(f"Shared how {n} clip{'s' if n != 1 else ''} did with ClipMonster.")
 
 
 # --- scheduling across accounts ------------------------------------------------------

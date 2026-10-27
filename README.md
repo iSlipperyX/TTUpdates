@@ -66,6 +66,12 @@ waiting), or all queued for one account.
   one for each new clip instead.
 - With autopilot off, a **reminder** pops up when a video's posting time comes round, and a
   **morning summary** says what's ready for each account.
+- **ClipMonster learns from your results.** After each stats refresh, the views of ClipMonster clips
+  that are two days old or more, compared with your account's usual views, go to ClipMonster's
+  `results.json`. ClipMonster then ranks channels whose clips do well higher, and shows its AI the
+  hooks that worked. The Account page lists the best and worst source channels and the best hook so
+  far. Untick **Tell ClipMonster how its clips do** in Settings → Ready to upload to stop it. Nothing
+  leaves your PC.
 
 ## How the score works
 
