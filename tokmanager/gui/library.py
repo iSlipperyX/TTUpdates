@@ -152,7 +152,8 @@ class LibraryPage(QWidget):
             self.filter.insertSeparator(self.filter.count())
             for a in self.state.accounts:
                 self.filter.addItem(QIcon(account_badge(a.id, a.label, 18)), a.label, f"account:{a.id}")
-        self.filter.setCurrentIndex(max(0, self.filter.findData(current)))
+        # findData(None) would match the separator, so a first fill (nothing chosen yet) starts at "All videos".
+        self.filter.setCurrentIndex(max(0, self.filter.findData(current)) if current else 0)
         self.filter.blockSignals(False)
 
     def _accounts_changed(self) -> None:

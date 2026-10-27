@@ -89,6 +89,15 @@ class Settings:
     autopilot: bool = False
     browser_logged_in: bool = False
     retry_failed: bool = True
+    # Ready to upload (ready.py): clips arrive from watched folders, you post them yourself
+    watch_folders: list[str] = field(default_factory=list)  # e.g. ClipMonster's Automation folder
+    watch_target: str = "library"  # library | spread (shared between accounts) | an account id
+    watch_ai: bool = False  # AI caption each imported clip (one Claude call per clip)
+    remind_to_post: bool = True  # notify when a queued video's time comes (accounts with autopilot off)
+    morning_summary: bool = True  # one notification a day: what's ready for each account
+    ready_folder: str = ""  # "" = Videos\TikTok Ready; where "Copy to a folder" puts clips + caption files
+    last_summary_day: str = ""
+    share_results: bool = True  # results.py: tell ClipMonster how its clips did (results.json)
     # Official TikTok API (optional, needs your own developer app)
     api_client_key: str = ""
     api_client_secret: str = ""

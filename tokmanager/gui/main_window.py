@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import jobs, updater
+from .. import jobs, ready, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -24,11 +24,14 @@ from .account import AccountPage
 from .accounts_dialog import AccountsDialog, account_status
 from .library import LibraryPage
 from .queue_page import QueuePage
+from .ready_page import ReadyPage
 from .settings_dialog import SettingsDialog
 from .state import AppState, Job
 from .widgets import account_badge
 
 AUTOPILOT_CHECK_MS = 30_000
+WATCH_CHECK_MS = 3 * 60_000
+FIRST_WATCH_CHECK_MS = 8_000
 UPDATE_CHECK_MS = 6 * 3600 * 1000
 FIRST_UPDATE_CHECK_MS = 20_000
 AUTO_INSTALL_QUIET_MINUTES = 20  # don't restart for an update if a post is due this soon
@@ -99,10 +102,12 @@ class MainWindow(QMainWindow):
         self.nav = QButtonGroup(self)
         self.stack = QStackedWidget()
         self.library = LibraryPage(state)
+        self.ready = ReadyPage(state)
         self.queue = QueuePage(state)
         self.account = AccountPage(state)
         self.nav_buttons: list[QPushButton] = []
-        for i, (text, page) in enumerate((("Library", self.library), ("Queue", self.queue), ("Account", self.account))):
+        pages = (("Library", self.library), ("Ready", self.ready), ("Queue", self.queue), ("Account", self.account))
+        for i, (text, page) in enumerate(pages):
             b = QPushButton(text)
             b.setObjectName("nav")
             b.setCheckable(True)
@@ -159,6 +164,9 @@ class MainWindow(QMainWindow):
         state.message.connect(self._log)
         state.jobs_changed.connect(self._jobs_changed)
         self.queue.post_requested.connect(self.post)
+        self.ready.edit_requested.connect(self._edit_in_queue)
+        self.ready.import_requested.connect(lambda: self.watch_tick(manual=True))
+        self.ready.settings_requested.connect(lambda: self.open_settings("Ready to upload"))
         self.account.login_requested.connect(self.login)
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
@@ -179,6 +187,10 @@ class MainWindow(QMainWindow):
         self.clock = QTimer(self, interval=60_000, timeout=self.queue.refresh)
         self.clock.start()
         QTimer.singleShot(3000, self.autopilot_tick)
+        # Watched folders: new clips from ClipMonster (or anywhere) come in by themselves.
+        self.watch_timer = QTimer(self, interval=WATCH_CHECK_MS, timeout=self.watch_tick)
+        self.watch_timer.start()
+        QTimer.singleShot(FIRST_WATCH_CHECK_MS, self.watch_tick)
         # Updates: a first check shortly after start, then every few hours.
         self.pending_release: updater.Release | None = None
         self._staged: tuple[Path, updater.Release] | None = None
@@ -214,7 +226,7 @@ class MainWindow(QMainWindow):
         self.log_toggle.setText(("▾" if vis else "▸") + " Activity")
 
     def _jobs_changed(self) -> None:
-        jobs_ = [j for j in self.state.jobs if j.kind != "update"]  # background update checks stay silent
+        jobs_ = [j for j in self.state.jobs if j.kind not in ("update", "watch")]  # background checks stay silent
         if not jobs_:
             self.job_label.setText("")
             self.job_bar.hide()
@@ -279,6 +291,7 @@ class MainWindow(QMainWindow):
 
     def autopilot_tick(self) -> None:
         st = self.state
+        self._ready_tick()
         if not any(a.autopilot for a in st.accounts) or st.busy("post") or st.busy("login"):
             return
         skipped: list[str] = []
@@ -293,6 +306,62 @@ class MainWindow(QMainWindow):
             account, item = pick
             self._log(f"Autopilot: “{item.name}” is due on {account.handle}.")
             self.post(item.id)
+
+    # --- ready to upload (posting by hand) ----------------------------------------------
+
+    def _ready_tick(self) -> None:
+        """Reminders when a video's time comes (accounts without autopilot) and the morning summary."""
+        st = self.state
+        s = st.settings
+        if s.remind_to_post:
+            for a, item in ready.reminders(st.store, st.accounts, s):
+                self._log(f"⏰ Time to post “{item.name}” on {a.handle}. It's at the top of the Ready page.")
+                self._notify(f"Time to post on {a.handle}", item.name, always=True)
+                st.save_soon()
+        day = ready.summary_due(s, st.accounts)
+        if day:
+            s.last_summary_day = day
+            st.save_settings()
+            text = ready.summary(st.store, st.accounts)
+            if text:
+                self._log(f"Ready to post today: {text}.")
+                self._notify("Ready to post today", text, always=True)
+
+    def watch_tick(self, manual: bool = False) -> None:
+        """Bring in new clips from the watched folders (on a worker thread), then score and queue them."""
+        st = self.state
+        s = st.settings
+        folders = [f for f in s.watch_folders if f]
+        if not folders or st.busy("watch"):
+            return
+
+        def found(items) -> None:
+            if not items:
+                if manual:
+                    self._log("No new clips in your watched folders.")
+                return
+            got = ready.assign(st.store, st.accounts, items, s.watch_target)
+            st.save_soon()
+            st.library_changed.emit()
+            where = ", ".join(f"{n} for {st.accounts.label_for(aid)}" for aid, n in got.items())
+            msg = f"{len(items)} new clip{'s' * (len(items) != 1)} from your watched folders" + \
+                  (f": {where}." if where else ", in the Library.")
+            self._log(msg)
+            self._notify("New clips ready", msg)
+            self.library.score([i.id for i in items])
+            if s.watch_ai and s.ai_api_key:
+                for it in items:
+                    account = st.account_for(it)
+                    job = Job(f"AI caption for {it.name}",
+                              lambda j, i=it.id, a=account: jobs.ai_item(st.store, i, s, j.log, account=a), kind="ai")
+                    st.run(job, on_success=lambda _it: st.library_changed.emit())
+
+        st.run(Job("Checking watched folders", lambda j: ready.import_watched(st.store, folders), kind="watch"),
+               on_success=found, quiet=not manual)
+
+    def _edit_in_queue(self, item_id: str) -> None:
+        self.nav_buttons[2].click()
+        self.queue.select_item(item_id)
 
     def _warn_cant_post(self) -> None:
         """Once per run, say so when autopilot is on for an account that isn't logged in."""
@@ -449,7 +518,7 @@ class MainWindow(QMainWindow):
         st = self.state
         a = st.add_account(name)
         st.switch_account(a.id)
-        self.nav_buttons[2].click()
+        self.nav_buttons[3].click()
         how = ("Your browser opens TikTok's approval page: approve with the TikTok account you want to add."
                if st.settings.upload_method == "api" else
                "A new browser window opens with its own empty profile: log in there with the TikTok account "
@@ -466,8 +535,10 @@ class MainWindow(QMainWindow):
 
     # --- settings -------------------------------------------------------------------
 
-    def open_settings(self) -> None:
-        dlg = SettingsDialog(self.state.settings, self, on_check_updates=lambda: self.check_for_updates(manual=True))
+    def open_settings(self, tab: str = "") -> None:
+        dlg = SettingsDialog(self.state.settings, self, on_check_updates=lambda: self.check_for_updates(manual=True),
+                             accounts=[(a.id, a.label) for a in self.state.accounts],
+                             tab=tab if isinstance(tab, str) else "")
         if dlg.exec():
             dlg.apply()
             self.state.save_settings()
@@ -517,8 +588,8 @@ class MainWindow(QMainWindow):
             m.addAction("On for every account", lambda: [st.set_autopilot(a.id, True) for a in st.accounts])
             m.addAction("Off for every account", lambda: [st.set_autopilot(a.id, False) for a in st.accounts])
 
-    def _notify(self, title: str, msg: str, error: bool = False) -> None:
-        if self.tray and not self.isActiveWindow():
+    def _notify(self, title: str, msg: str, error: bool = False, always: bool = False) -> None:
+        if self.tray and (always or not self.isActiveWindow()):
             self.tray.showMessage(title, msg, QSystemTrayIcon.Warning if error else QSystemTrayIcon.Information, 8000)
 
     def _show_window(self) -> None:

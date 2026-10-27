@@ -28,6 +28,15 @@ class VideoItem:
     source_group: str = ""
     source_score: float | None = None
     source_reason: str = ""
+    source_channel: str = ""
+    source_url: str = ""
+    source_permission: str = ""  # why ClipMonster's picking rules allowed this video
+    source_rating: int | None = None  # ClipMonster's AI "does it stand alone" rating, 1-10
+    hook: str = ""  # ClipMonster's AI hook line (also the starting caption)
+    warnings: list[str] = field(default_factory=list)  # ClipMonster's quality check notes
+    credit: str = ""  # a line the caption must carry (Creative Commons credit)
+    imported_by: str = ""  # "watch" when a watched folder brought it in
+    reminded_at: float | None = None  # when the "time to post" reminder went out
     # Analysis + score
     info: dict = field(default_factory=dict)
     analysis: dict = field(default_factory=dict)
@@ -140,6 +149,7 @@ class Store:
         self.lock = threading.RLock()
         self.items: dict[str, VideoItem] = {}
         self.stats: dict[str, AccountStats] = {}  # by account id
+        self.ignored: set[str] = set()  # files removed from the library, which watched folders mustn't bring back
         self.load()
 
     # --- persistence ------------------------------------------------------------
@@ -151,6 +161,7 @@ class Store:
             return
         with self.lock:
             self.items = {d["id"]: _build(VideoItem, d) for d in data.get("items", []) if d.get("id")}
+            self.ignored = set(data.get("ignored") or [])
             accounts = data.get("accounts")
             if isinstance(accounts, dict):
                 self.stats = {aid: AccountStats.from_json(d or {}) for aid, d in accounts.items()}
@@ -168,6 +179,7 @@ class Store:
                 "version": 2,
                 "items": [asdict(i) for i in self.items.values()],
                 "accounts": {aid: st.to_json() for aid, st in self.stats.items()},
+                "ignored": sorted(self.ignored),
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -216,36 +228,64 @@ class Store:
 
     # --- library ----------------------------------------------------------------
 
-    def add_paths(self, paths: list[Path]) -> list[VideoItem]:
-        """Add video files (folders are searched recursively). Already-known files are skipped."""
-        from .clipmonster import read_folder_index
+    def add_paths(self, paths: list[Path], watched: bool = False, now: float | None = None,
+                  settle: float = 60.0) -> list[VideoItem]:
+        """Add video files (folders are searched recursively). Already-known files are skipped, and so
+        are clips ClipMonster's quality check rejected.
 
+        `watched` is a watched folder's automatic import: files removed from the library before stay
+        out, and a file is only taken once it's finished, meaning ClipMonster has listed it in its
+        clips.json, or (for other files) nothing has written to it for `settle` seconds. Adding by hand
+        brings a removed file back.
+        """
+        from .clipmonster import REJECTED_DIR, credit_line, needs_credit, read_folder_index
+
+        now = time.time() if now is None else now
         with self.lock:
-            known = {os.path.normcase(os.path.abspath(i.path)) for i in self.items.values()}
+            known = {_key(i.path) for i in self.items.values()}
             added: list[VideoItem] = []
             files: list[Path] = []
             for p in paths:
                 p = Path(p)
                 if p.is_dir():
                     files += sorted(f for f in p.rglob("*") if f.suffix.lower() in VIDEO_EXTS
-                                    and ".downloads" not in f.parts and not f.name.startswith("."))
+                                    and ".downloads" not in f.parts and REJECTED_DIR not in f.parts
+                                    and not f.name.startswith("."))
                 elif p.suffix.lower() in VIDEO_EXTS:
                     files.append(p)
             index_cache: dict[Path, dict] = {}
             for f in files:
-                key = os.path.normcase(os.path.abspath(f))
-                if key in known:
+                key = _key(f)
+                if key in known or (watched and key in self.ignored):
                     continue
-                known.add(key)
-                item = VideoItem(path=str(f.resolve()), title=f.stem)
                 if f.parent not in index_cache:
                     index_cache[f.parent] = read_folder_index(f.parent)
                 meta = index_cache[f.parent].get(f.name)
+                if meta and meta.get("rejected"):
+                    continue
+                if watched and not meta:
+                    try:
+                        if now - f.stat().st_mtime < settle:
+                            continue  # still being written
+                    except OSError:
+                        continue
+                known.add(key)
+                self.ignored.discard(key)
+                item = VideoItem(path=str(f.resolve()), title=f.stem, imported_by="watch" if watched else "")
                 if meta:
                     item.title = meta.get("title") or item.title
                     item.source_group = meta.get("group", "")
                     item.source_score = meta.get("score")
                     item.source_reason = meta.get("reason", "")
+                    item.source_channel = meta.get("channel", "")
+                    item.source_url = meta.get("url", "")
+                    item.source_permission = meta.get("permission", "")
+                    item.source_rating = meta.get("rating")
+                    item.hook = meta.get("hook", "")
+                    item.caption = item.hook
+                    item.warnings = list(meta.get("warnings") or [])
+                    if needs_credit(meta):
+                        item.credit = credit_line(item.source_channel)
                 else:
                     item.source_group = str(f.parent)
                 self.items[item.id] = item
@@ -255,7 +295,9 @@ class Store:
     def remove(self, ids: list[str]) -> None:
         with self.lock:
             for i in ids:
-                self.items.pop(i, None)
+                it = self.items.pop(i, None)
+                if it:
+                    self.ignored.add(_key(it.path))
             self._renumber()
 
     def get(self, item_id: str) -> VideoItem | None:
@@ -275,7 +317,8 @@ class Store:
             copy = replace(src, id=fresh.id, added_at=fresh.added_at, info=deepcopy(src.info),
                            analysis=deepcopy(src.analysis), score=deepcopy(src.score), ai=deepcopy(src.ai),
                            status="new", account="", queue_pos=None, pinned_at=None, planned_at=None,
-                           attempts=0, last_error="", posted_at=None, tiktok_id="", tiktok_url="", publish_id="")
+                           attempts=0, last_error="", posted_at=None, tiktok_id="", tiktok_url="", publish_id="",
+                           warnings=list(src.warnings), reminded_at=None)
             self.items[copy.id] = copy
             self.enqueue([copy.id], account)
             return copy
@@ -419,6 +462,10 @@ class Store:
         if not item.tiktok_id or item.account not in self.stats:
             return None
         return self.stats[item.account].tiktok_videos.get(item.tiktok_id)
+
+
+def _key(path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def _norm(text: str) -> str:
