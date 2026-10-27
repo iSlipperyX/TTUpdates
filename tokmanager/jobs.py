@@ -72,6 +72,71 @@ def ai_item(store: Store, item_id: str, s: Settings, log: Log | None = None,
     return item
 
 
+def proven_tags(store: Store, account_id: str, limit: int = 8, min_posts: int = 3) -> list[tuple[str, int]]:
+    """The account's own hashtags whose posts got the most views (median per tag), best first.
+
+    Empty until at least `min_posts` of its posts have view counts, so a single lucky post
+    doesn't steer every suggestion.
+    """
+    import statistics
+
+    from .tiktok import normalize_hashtags
+
+    views: dict[str, list[int]] = {}
+    names: dict[str, str] = {}
+    counted = 0
+    for it in store.posted(account_id):
+        v = store.video_for(it)
+        if v is None:
+            continue
+        counted += 1
+        for tag in normalize_hashtags(it.hashtags).split():
+            key = tag.lstrip("#").lower()
+            names.setdefault(key, tag.lstrip("#"))
+            views.setdefault(key, []).append(v.views)
+    if counted < min_posts:
+        return []
+    ranked = sorted(views.items(), key=lambda kv: statistics.median(kv[1]), reverse=True)
+    return [(names[k], int(statistics.median(v))) for k, v in ranked[:limit]]
+
+
+def clip_context(item: VideoItem) -> dict:
+    """ClipMonster's facts about the clip (the source video's title, channel, why it was picked)."""
+    from .clipmonster import read_folder_index
+
+    path = Path(item.path)
+    try:
+        return read_folder_index(path.parent).get(path.name) or {}
+    except OSError:
+        return {}
+
+
+def ai_hashtags(store: Store, item_id: str, s: Settings, account: Account | None = None, log: Log | None = None,
+                only_if_empty: bool = False) -> VideoItem:
+    """Claude writes the clip's hashtags (text only). With `only_if_empty`, hashtags you or an AI
+    rating already gave it are kept (used for clips arriving from watched folders)."""
+    from .ai import suggest_hashtags
+
+    item = store.get(item_id)
+    if item is None:
+        raise KeyError(item_id)
+    if only_if_empty and item.hashtags.strip():
+        return item
+    a = account
+    tags = suggest_hashtags(a.apply(s) if a else s, item, niche=a.niche if a else s.ai_niche,
+                            always=a.default_hashtags if a else s.default_hashtags,
+                            proven=proven_tags(store, a.id) if a else None, context=clip_context(item))
+    if not tags:
+        raise RuntimeError("Claude didn't come up with hashtags that fit; add them yourself.")
+    with store.lock:
+        if only_if_empty and item.hashtags.strip():  # typed in while Claude was thinking
+            return item
+        item.hashtags = " ".join("#" + t for t in tags)
+    if log:
+        log(f"AI hashtags for “{item.name}”: {item.hashtags}")
+    return item
+
+
 def recombine(item: VideoItem, s: Settings) -> None:
     """Recompute the total after weights change or an AI rating arrives (no re-analysis)."""
     if not item.score:

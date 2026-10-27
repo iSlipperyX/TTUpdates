@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import jobs, ready, safefile, updater
+from .. import ai, jobs, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -387,12 +387,17 @@ class MainWindow(QMainWindow):
             self._log(msg)
             self._notify("New clips ready", msg)
             self.library.score([i.id for i in items])
-            if s.watch_ai and s.ai_api_key:
-                for it in items:
-                    account = st.account_for(it)
+            if not ai.has_key(s) or not (s.watch_ai or s.watch_hashtags):
+                return
+            for it in items:
+                account = st.account_for(it)
+                if s.watch_ai:  # the full rating writes a caption and hashtags
                     job = Job(f"AI caption for {it.name}",
                               lambda j, i=it.id, a=account: jobs.ai_item(st.store, i, s, j.log, account=a), kind="ai")
-                    st.run(job, on_success=lambda _it: st.library_changed.emit())
+                else:  # just hashtags: one quick text-only call, kept off clips that already have some
+                    job = Job(f"AI hashtags for {it.name}", lambda j, i=it.id, a=account:
+                              jobs.ai_hashtags(st.store, i, s, a, j.log, only_if_empty=True), kind="ai")
+                st.run(job, on_success=lambda _it: (st.save_soon(), st.library_changed.emit()))
 
         st.run(Job("Checking watched folders", work, kind="watch"), on_success=found, quiet=not manual)
 

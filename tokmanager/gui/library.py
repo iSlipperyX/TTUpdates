@@ -441,7 +441,9 @@ class LibraryPage(QWidget):
 
     def ai_selected(self) -> None:
         s = self.state.settings
-        if not s.ai_api_key:
+        from ..ai import has_key
+
+        if not has_key(s):
             QMessageBox.information(self, "AI rating", "Add your Anthropic API key in Settings → AI to use AI rating.")
             return
         ids = self.selected_ids()

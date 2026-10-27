@@ -8,7 +8,8 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QFormLayout, QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton,
                                QVBoxLayout, QWidget)
 
-from ..jobs import ai_item
+from ..ai import has_key
+from ..jobs import ai_hashtags, ai_item
 from ..store import VideoItem
 from ..tiktok import MAX_CAPTION, compose_caption, normalize_hashtags
 from . import theme
@@ -36,6 +37,11 @@ class PostEditor(QWidget):
         self.ai_btn = QPushButton("✨ AI caption")
         self.ai_btn.setToolTip("Have Claude watch the clip, rate it and write a caption + hashtags")
         self.ai_btn.clicked.connect(self._ai)
+        self.tags_btn = QPushButton("✨ Hashtags")
+        self.tags_btn.setToolTip("Just the hashtags: Claude reads what's known about the clip (quicker and cheaper "
+                                 "than a full AI caption) and replaces the hashtags below")
+        self.tags_btn.clicked.connect(self._ai_tags)
+        head.addWidget(self.tags_btn)
         head.addWidget(self.ai_btn)
         lay.addLayout(head)
 
@@ -140,7 +146,7 @@ class PostEditor(QWidget):
         if not self.item:
             return
         s = self.state.settings
-        if not s.ai_api_key:
+        if not has_key(s):
             self.state.log("Add your Anthropic API key in Settings → AI first.")
             return
         item_id = self.item.id
@@ -162,6 +168,33 @@ class PostEditor(QWidget):
 
         account = self.state.account_for(self.item)
         job = Job("AI rating", lambda j: ai_item(self.state.store, item_id, s, j.log, account=account), kind="ai")
+        self.state.run(job, on_success=done, on_failure=done)
+
+
+    def _ai_tags(self) -> None:
+        if not self.item:
+            return
+        s = self.state.settings
+        if not has_key(s):
+            self.state.log("Add your Anthropic API key in Settings → AI first.")
+            return
+        if self._save_timer.isActive():  # keep what was just typed in the caption
+            self._save_timer.stop()
+            self._save()
+        item_id = self.item.id
+        self.tags_btn.setEnabled(False)
+        self.tags_btn.setText("Writing…")
+
+        def done(_=None):
+            self.tags_btn.setEnabled(True)
+            self.tags_btn.setText("✨ Hashtags")
+            self.state.save_soon()
+            self.state.library_changed.emit()
+            if self.item and self.item.id == item_id:
+                self.set_item(self.item)
+
+        account = self.state.account_for(self.item)
+        job = Job("AI hashtags", lambda j: ai_hashtags(self.state.store, item_id, s, account, j.log), kind="ai")
         self.state.run(job, on_success=done, on_failure=done)
 
 

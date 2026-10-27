@@ -69,6 +69,16 @@ def installed() -> bool:
     return settings_path().is_file()
 
 
+def ai_key() -> str:
+    """The Anthropic API key saved in ClipMonster on this PC, if any, so one key serves both apps."""
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    key = data.get("ai_api_key") if isinstance(data, dict) else ""
+    return key.strip() if isinstance(key, str) and key.strip().startswith("sk-") else ""
+
+
 def output_folders() -> list[Path]:
     """Where ClipMonster on this PC puts its clips (Automation's folder first), read from its settings."""
     try:

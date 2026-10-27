@@ -93,6 +93,7 @@ class Settings:
     watch_target: str = "library"  # library | spread (shared between accounts) | an account id
     clipmonster_offered: str = ""  # the ClipMonster folder the app last offered to watch ("" = never asked)
     watch_ai: bool = False  # AI caption each imported clip (one Claude call per clip)
+    watch_hashtags: bool = True  # AI hashtags for each imported clip (a quick text-only call, needs a key)
     remind_to_post: bool = True  # notify when a queued video's time comes (accounts with autopilot off)
     morning_summary: bool = True  # one notification a day: what's ready for each account
     ready_folder: str = ""  # "" = Videos\TikTok Ready; where "Copy to a folder" puts clips + caption files
