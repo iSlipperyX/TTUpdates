@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import jobs, ready, updater
+from .. import jobs, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
         self.account.login_requested.connect(self.login)
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
+        self.account.check_requested.connect(lambda: self.check_posting(self.state.active, full=True))
         self.account.requeue_requested.connect(self.requeue)
         self.account.manage_requested.connect(self.manage_accounts)
         state.account_switched.connect(self._account_switched)
@@ -212,6 +213,18 @@ class MainWindow(QMainWindow):
             self.hide()
         else:
             self.show()
+        if safefile.notices:
+            QTimer.singleShot(600, self._show_recovered)
+
+    def _show_recovered(self) -> None:
+        """A saved file was damaged and came back from a backup (or couldn't): say so once."""
+        lines, safefile.notices[:] = list(safefile.notices), []
+        for line in lines:
+            self._log("⚠ " + line)
+        if self.isVisible():
+            QMessageBox.warning(self, "A saved file was damaged", "\n\n".join(lines))
+        elif self.tray:
+            self.tray.showMessage("A saved file was damaged", lines[0], QSystemTrayIcon.Warning, 15000)
 
     # --- log / jobs -------------------------------------------------------------------
 
@@ -306,6 +319,10 @@ class MainWindow(QMainWindow):
             account, item = pick
             self._log(f"Autopilot: “{item.name}” is due on {account.handle}.")
             self.post(item.id)
+        elif not st.busy("check"):
+            account = jobs.upload_check_due(st.store, st.accounts, st.settings)
+            if account:
+                self.check_posting(account, full=False, auto=True)
 
     # --- ready to upload (posting by hand) ----------------------------------------------
 
@@ -392,10 +409,19 @@ class MainWindow(QMainWindow):
                 name = api.profile().username
             else:
                 from ..tiktok.browser import TikTokBrowser
+                from ..tiktok.login import login_window
 
-                with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
-                    if not b.login():
-                        raise RuntimeError("Login wasn't completed.")
+                # A plain browser window: TikTok refuses logins in an automated one ("Too many attempts").
+                if not login_window(s, a.browser_dir(), j.log, j.cancelled):
+                    j.log("Couldn't find Edge or Chrome to open by itself; using the app's browser window.")
+                    with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
+                        if not b.login():
+                            raise RuntimeError("Login wasn't completed.")
+                with TikTokBrowser(s, a.browser_dir(), j.log, headless=True, cancelled=j.cancelled) as b:
+                    if not b.logged_in():
+                        a.logged_in = False
+                        raise RuntimeError("TikTok's login wasn't saved in that window. Log in there, wait for "
+                                           "your feed to appear, then close it.")
                     a.logged_in = True
                     name = b.whoami()
             if name:
@@ -454,6 +480,55 @@ class MainWindow(QMainWindow):
         job.account_id = a.id
         st.run(job, pool="tiktok", on_success=lambda _: (st.save_accounts(), st.account_changed.emit(),
                                                          st.library_changed.emit()))
+
+    def check_posting(self, account: Account, full: bool, auto: bool = False) -> None:
+        """Test TikTok Studio's upload page for `account` without posting (full: with a test clip)."""
+        st = self.state
+        if st.account_busy(account.id, ("post", "login", "account", "check")):
+            return
+
+        def work(j: Job):
+            from .. import tiktok
+
+            return tiktok.check_upload(account.apply(st.settings), account, j.log, j.cancelled, full=full)
+
+        def done(results: list[tuple[str, str, str]]) -> None:
+            verdict = "fail" if any(r[1] == "fail" for r in results) else \
+                      "warn" if any(r[1] == "warn" for r in results) else "ok"
+            lines = [f"{'✓' if r == 'ok' else '⚠' if r == 'warn' else '✖'} {step}{': ' + detail if detail else ''}"
+                     for step, r, detail in results]
+            # A quick check can't see the caption box or Post button, so it never replaces a full result.
+            if full or verdict == "fail" or not account.upload_check_at or account.upload_check == "fail":
+                account.upload_check, account.upload_check_detail = verdict, "\n".join(lines)
+            account.upload_check_at = time.time()
+            st.save_accounts()
+            st.account_changed.emit()
+            head = {"ok": f"Posting test for {account.handle} passed.",
+                    "warn": f"Posting test for {account.handle} passed with a warning.",
+                    "fail": f"Posting test for {account.handle} failed. Autopilot posts would fail the same way."}[verdict]
+            self._log(("✓ " if verdict == "ok" else "⚠ ") + head + " " + "; ".join(lines))
+            if verdict == "fail" and auto:
+                self._notify("TikTok posting problem", head, error=True, always=True)
+            if not auto:
+                box = QMessageBox.information if verdict == "ok" else QMessageBox.warning
+                box(self, "Posting test", head + "\n\n" + "\n".join(lines) +
+                    ("\n\nNothing was posted. The test clip was put in the uploader and thrown away." if full else ""))
+
+        def failed(msg: str) -> None:
+            if msg == "Cancelled":
+                return
+            account.upload_check_at, account.upload_check = time.time(), "fail"
+            account.upload_check_detail = msg
+            st.save_accounts()
+            st.account_changed.emit()
+            if auto:
+                self._notify("TikTok posting problem", f"Posting test for {account.handle} couldn't run: {msg}",
+                             error=True, always=True)
+
+        what = "Testing posting" if full else "Checking TikTok's upload page"
+        job = Job(f"{what} for {account.label}", work, kind="check")
+        job.account_id = account.id
+        st.run(job, pool="tiktok", on_success=done, on_failure=failed, quiet=auto)
 
     def requeue(self, item_id: str) -> None:
         st = self.state

@@ -12,14 +12,13 @@ still finds them after a rollback).
 
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
+from . import safefile
 from .config import Settings, app_dir, cache_dir
 
 LEGACY_BROWSER_PROFILE = "browser-profile"
@@ -60,6 +59,10 @@ class Account:
     default_privacy: str = "public"
     default_hashtags: str = "#fyp"
     niche: str = ""  # audience / topic, used by AI captions and ratings
+    # Last check of TikTok's upload page (tiktok.check_upload): when, "ok" | "warn" | "fail", what it found
+    upload_check_at: float = 0.0
+    upload_check: str = ""
+    upload_check_detail: str = ""
 
     def __post_init__(self) -> None:
         self.browser_profile = self.browser_profile or f"browser-profiles/{self.id}"
@@ -109,10 +112,7 @@ class Accounts:
     @classmethod
     def load(cls, settings: Settings, path: Path | None = None) -> "Accounts":
         acc = cls(path)
-        try:
-            data = json.loads(acc.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = None
+        data = safefile.load(acc.path, "your account list")
         if isinstance(data, dict):
             known = {f.name for f in fields(Account)}
             acc.items = [Account(**{k: v for k, v in d.items() if k in known})
@@ -138,9 +138,7 @@ class Accounts:
 
     def save(self) -> None:
         data = {"version": 1, "active": self.active_id, "accounts": [asdict(a) for a in self.items]}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
+        safefile.save(self.path, data)
 
     # --- access -----------------------------------------------------------------
 

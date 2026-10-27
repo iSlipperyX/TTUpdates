@@ -6,13 +6,14 @@ import datetime as dt
 from dataclasses import fields
 from typing import Callable
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSlider, QSpinBox,
-                               QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
+                               QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import clipmonster, ready, updater
-from ..config import VERSION, Settings, Weights
+from .. import clipmonster, diagnostics, ready, updater
+from ..config import VERSION, Settings, Weights, app_dir
 from ..scoring import PART_LABELS
 from .widgets import label
 
@@ -189,6 +190,20 @@ class SettingsDialog(QDialog):
             unskip = QPushButton(f"Stop skipping {settings.skipped_version}")
             unskip.clicked.connect(lambda: (setattr(settings, "skipped_version", ""), unskip.hide()))
             f.addRow("", unskip)
+        help_row = QHBoxLayout()
+        copy_diag = QPushButton("Copy diagnostics")
+        copy_diag.setToolTip("Copies the version, setup, recent log and latest error report (no keys or logins), "
+                             "for pasting when asking for help")
+        copied = label("", "muted")
+        copy_diag.clicked.connect(lambda: (QApplication.clipboard().setText(diagnostics.report()),
+                                           copied.setText("Copied. Paste it into your message.")))
+        open_logs = QPushButton("Open log folder")
+        open_logs.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(app_dir()))))
+        help_row.addWidget(copy_diag)
+        help_row.addWidget(open_logs)
+        help_row.addWidget(copied)
+        help_row.addStretch(1)
+        f.addRow("Problems?", help_row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)

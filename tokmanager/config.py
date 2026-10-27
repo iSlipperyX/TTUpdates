@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from . import safefile
 from .vault import protect, unprotect
 
 APP_NAME = "TikTok Manager"
 APP_ID = "TikTokManager"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def app_dir() -> Path:
@@ -88,7 +88,6 @@ class Settings:
     min_gap_minutes: int = 120
     autopilot: bool = False
     browser_logged_in: bool = False
-    retry_failed: bool = True
     # Ready to upload (ready.py): clips arrive from watched folders, you post them yourself
     watch_folders: list[str] = field(default_factory=list)  # e.g. ClipMonster's Automation folder
     watch_target: str = "library"  # library | spread (shared between accounts) | an account id
@@ -119,9 +118,8 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
-        try:
-            data = json.loads(cls.path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        data = safefile.load(cls.path(), "your settings")
+        if not isinstance(data, dict):
             return cls()
         known = {f.name for f in fields(cls)}
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
@@ -136,9 +134,7 @@ class Settings:
         data = asdict(self)
         for name in SECRET_FIELDS:
             data[name] = protect(data[name])
-        tmp = self.path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path())
+        safefile.save(self.path(), data)
 
 
 SECRET_FIELDS = ("ai_api_key", "api_client_secret")

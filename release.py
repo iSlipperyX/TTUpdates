@@ -123,25 +123,33 @@ class GitHub:
     def tag_exists(self, tag: str) -> bool:
         return self.call("GET", f"/releases/tags/{tag}", ok=(200, 404)).status_code == 200
 
-    def publish(self, tag: str, target: str, title: str, notes: str, files: list[Path]) -> str:
-        # Create a draft, attach the files, then publish: users never see a release without its zip.
-        # target is the commit (or branch) the tag is made on.
-        rel = self.call("POST", "/releases", json={"tag_name": tag, "target_commitish": target, "name": title,
-                                                   "body": notes, "draft": True}).json()
-        try:
-            upload = rel["upload_url"].split("{", 1)[0]
-            for f in files:
-                print(f"Uploading {f.name} ({f.stat().st_size / 1e6:.0f} MB)…")
-                with f.open("rb") as fh:
-                    self.call("POST", upload, params={"name": f.name}, data=fh, timeout=1800, headers={
-                        "Content-Type": "application/zip" if f.suffix == ".zip" else "text/plain",
-                        "Content-Length": str(f.stat().st_size)})
-            done = self.call("PATCH", f"/releases/{rel['id']}", json={"draft": False, "make_latest": "true"}).json()
-            return done.get("html_url", "")
-        except BaseException:
-            self.call("DELETE", f"/releases/{rel['id']}", ok=(204, 404))
-            raise
+    def create_draft(self, tag: str, target: str, title: str, notes: str) -> dict:
+        """A draft release, made before the build so a token that can't publish fails in seconds.
 
+        Drafts are invisible to installed apps, and no tag exists until it's published.
+        """
+        r = self.call("POST", "/releases", ok=(201, 403, 404), json={
+            "tag_name": tag, "target_commitish": target, "name": title, "body": notes, "draft": True})
+        if r.status_code != 201:
+            raise SystemExit(f"That token can read {self.repo} but isn't allowed to create releases there.\n"
+                             "At github.com/settings/personal-access-tokens, give it access to this repository "
+                             "with 'Contents: Read and write', then try again.")
+        return r.json()
+
+    def delete_draft(self, rel: dict) -> None:
+        self.call("DELETE", f"/releases/{rel['id']}", ok=(204, 404))
+
+    def publish(self, rel: dict, files: list[Path]) -> str:
+        """Attach the files to the draft, then publish it: users never see a release without its zip."""
+        upload = rel["upload_url"].split("{", 1)[0]
+        for f in files:
+            print(f"Uploading {f.name} ({f.stat().st_size / 1e6:.0f} MB)…")
+            with f.open("rb") as fh:
+                self.call("POST", upload, params={"name": f.name}, data=fh, timeout=1800, headers={
+                    "Content-Type": "application/zip" if f.suffix == ".zip" else "text/plain",
+                    "Content-Length": str(f.stat().st_size)})
+        done = self.call("PATCH", f"/releases/{rel['id']}", json={"draft": False, "make_latest": "true"}).json()
+        return done.get("html_url", "")
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -193,21 +201,25 @@ def main() -> int:
                              "newer commit is yours), then try again.")
         target = head
 
-    bumped = current_version() != version
-    if bumped:
-        set_version(version)
-        print(f"Version set to {version} in tokmanager/config.py")
-    if not args.skip_tests:
-        subprocess.run([sys.executable, "-m", "pytest", "-q"], check=True, cwd=ROOT)
-    if not args.skip_build:
-        subprocess.run([sys.executable, "build.py"], check=True, cwd=ROOT)
-    files = [DIST / ZIP_NAME, DIST / (ZIP_NAME + ".sha256")]
-    for f in files:
-        if not f.is_file():
-            raise SystemExit(f"Missing {f}; run without --skip-build.")
-
     gh.ensure_not_empty(branch)
-    url = gh.publish(tag, target, f"TikTok Manager {version}", body, files)
+    draft = gh.create_draft(tag, target, f"TikTok Manager {version}", body)
+    try:
+        bumped = current_version() != version
+        if bumped:
+            set_version(version)
+            print(f"Version set to {version} in tokmanager/config.py")
+        if not args.skip_tests:
+            subprocess.run([sys.executable, "-m", "pytest", "-q"], check=True, cwd=ROOT)
+        if not args.skip_build:
+            subprocess.run([sys.executable, "build.py"], check=True, cwd=ROOT)
+        files = [DIST / ZIP_NAME, DIST / (ZIP_NAME + ".sha256")]
+        for f in files:
+            if not f.is_file():
+                raise SystemExit(f"Missing {f}; run without --skip-build.")
+        url = gh.publish(draft, files)
+    except BaseException:
+        gh.delete_draft(draft)  # a failed test, build or upload leaves nothing behind on GitHub
+        raise
     print(f"\nPublished {tag}: {url}\nInstalled copies will offer the update on their next check.")
     if bumped and head is not None:
         print(f"\nThe version bump isn't on GitHub yet. Commit and push it:\n"

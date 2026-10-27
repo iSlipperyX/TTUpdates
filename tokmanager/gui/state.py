@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import traceback
+from logging.handlers import RotatingFileHandler
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
@@ -91,7 +92,9 @@ class AppState(QObject):
         self.jobs: list[Job] = []
         self._save_timer = QTimer(self, singleShot=True, interval=800, timeout=self.store.save)
 
-        handler = logging.FileHandler(app_dir() / "tokmanager.log", encoding="utf-8")
+        # 2 MB per file, 3 old ones kept: about a month of normal use, and never more than 8 MB.
+        handler = RotatingFileHandler(app_dir() / "tokmanager.log", maxBytes=2_000_000, backupCount=3,
+                                      encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log_file.addHandler(handler)
         log_file.setLevel(logging.INFO)

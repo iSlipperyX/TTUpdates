@@ -1,7 +1,8 @@
 """Drive TikTok's own web uploader in your installed Edge/Chrome with a dedicated profile.
 
-You log in yourself once in the window this opens (the app never sees your password);
-the login is kept in the app's own browser profile for later uploads and stat refreshes.
+You log in yourself once, in a plain browser window on the same profile (login.py: TikTok
+refuses logins in an automated window). The app never sees your password; the login is kept
+in the app's own browser profile for later uploads and stat refreshes.
 Every account has its own profile folder, so each one stays logged in to its own TikTok.
 
 TikTok changes its web pages often, so every step has several selectors to try and the
@@ -110,7 +111,8 @@ class TikTokBrowser:
         return any(c["name"] in SESSION_COOKIES and c.get("value") for c in cookies)
 
     def login(self, timeout: float = 900) -> bool:
-        """Open TikTok's login page and wait until the user has logged in (or closed the window)."""
+        """Log in inside this automated window: only a fallback when no Edge/Chrome install is found
+        for login.login_window(), because TikTok often answers "Too many attempts" here."""
         if self.logged_in():
             self.log("Already logged in to TikTok.")
             return True
@@ -135,12 +137,10 @@ class TikTokBrowser:
         self.ctx.clear_cookies()
 
     def require_login(self) -> None:
-        if self.logged_in():
-            return
-        if self.headless:
+        # No logging in from here: TikTok refuses logins in this automated window ("Too many attempts").
+        # Account → Log in opens a plain browser window for it instead (login.py).
+        if not self.logged_in():
             raise BrowserError("Not logged in to TikTok. Use Account → Log in first.")
-        if not self.login():
-            raise BrowserError("Not logged in to TikTok.")
 
     # --- account ----------------------------------------------------------------
 
@@ -288,9 +288,12 @@ class TikTokBrowser:
             while time.time() < end and cap.count() and cap.first.is_visible():
                 self._sleep(1)
 
+    def _caption_editor(self, timeout: float = 30):
+        return self._first_visible(["div.public-DraftEditor-content[contenteditable='true']",
+                                    "div[data-contents='true']", "div[contenteditable='true']"], timeout=timeout)
+
     def _type_caption(self, caption: str) -> None:
-        editor = self._first_visible(["div.public-DraftEditor-content[contenteditable='true']",
-                                      "div[data-contents='true']", "div[contenteditable='true']"], timeout=30)
+        editor = self._caption_editor()
         if not editor:
             raise BrowserError("Couldn't find the caption box on TikTok's upload page.")
         self._editor = editor
@@ -355,14 +358,17 @@ class TikTokBrowser:
         except Exception:
             self.page.keyboard.press("Control+End")
 
+    def _privacy_box(self, timeout: float = 4):
+        return self._first_visible(["div[data-e2e='video_visibility_container'] button[role='combobox']",
+                                    "div[data-e2e='video_visibility_container'] div[role='combobox']",
+                                    "div[data-e2e='permission-container'] button"], timeout=timeout)
+
     def _set_privacy(self, privacy: str) -> None:
         labels = PRIVACY_LABELS.get(privacy)
         if not labels:
             return
         try:
-            box = self._first_visible(["div[data-e2e='video_visibility_container'] button[role='combobox']",
-                                       "div[data-e2e='video_visibility_container'] div[role='combobox']",
-                                       "div[data-e2e='permission-container'] button"], timeout=4)
+            box = self._privacy_box()
             if not box:
                 raise BrowserError("privacy picker not found")
             current = (box.inner_text(timeout=1000) or "").lower()
@@ -419,17 +425,10 @@ class TikTokBrowser:
             step("Checking which TikTok account is logged in…")
             self.check_user(expected_user)
         step("Opening TikTok Studio…")
-        self.page.goto(UPLOAD_URL, wait_until="domcontentloaded")
-        self._sleep(2)
-        if "login" in self.page.url:
-            raise BrowserError("TikTok asked to log in again. Use Account → Log in.")
-        self._wait_for_captcha()
-        self._dismiss_popups()
+        self._open_upload_page()
 
         step("Sending the video…")
-        file_input = self.page.locator("input[type='file']")
-        file_input.first.wait_for(state="attached", timeout=45_000)
-        file_input.first.set_input_files(str(video))
+        self._file_input().set_input_files(str(video))
 
         # The caption box appears as soon as TikTok accepts the file.
         self._type_caption(caption)
@@ -449,9 +448,7 @@ class TikTokBrowser:
             err = self.page.locator("text=/upload failed|couldn.t upload|unsupported file|file is too large/i")
             if err.count() and err.first.is_visible():
                 raise BrowserError("TikTok rejected the file: " + (err.first.inner_text() or "upload failed").strip())
-            btn = self.page.locator("button[data-e2e='post_video_button']")
-            if not btn.count():
-                btn = self.page.locator("button:has-text('Post'):not(:has-text('Post now'))")
+            btn = self._post_button()
             if btn.count():
                 b = btn.first
                 disabled = (b.get_attribute("disabled") is not None or b.get_attribute("aria-disabled") == "true"
@@ -468,6 +465,97 @@ class TikTokBrowser:
         post.scroll_into_view_if_needed()
         post.click()
         self._finish_post()
+
+    def _open_upload_page(self) -> None:
+        self.page.goto(UPLOAD_URL, wait_until="domcontentloaded")
+        self._sleep(2)
+        if "login" in self.page.url:
+            raise BrowserError("TikTok asked to log in again. Use Account → Log in.")
+        self._wait_for_captcha()
+        self._dismiss_popups()
+
+    def _file_input(self, timeout: float = 45):
+        file_input = self.page.locator("input[type='file']")
+        file_input.first.wait_for(state="attached", timeout=timeout * 1000)
+        return file_input.first
+
+    def _post_button(self):
+        btn = self.page.locator("button[data-e2e='post_video_button']")
+        if not btn.count():
+            btn = self.page.locator("button:has-text('Post'):not(:has-text('Post now'))")
+        return btn
+
+    def check_upload_page(self, test_video: Path | None = None, expected_user: str = "") -> list[tuple[str, str, str]]:
+        """Walk TikTok Studio's upload page as far as just before Post, without posting anything.
+
+        Returns (step, "ok" | "warn" | "fail", detail) for each check; it stops at the first failure. With
+        `test_video`, that clip is put in the uploader so the caption box, privacy picker and Post
+        button can be found; the upload is then discarded and nothing is published. Without it,
+        only the login and the page itself are checked.
+        """
+        results: list[tuple[str, str, str]] = []
+
+        def ok(step: str, detail: str = "") -> None:
+            results.append((step, "ok", detail))
+
+        def fail(step: str, detail: str) -> list[tuple[str, str, str]]:
+            results.append((step, "fail", detail))
+            self.screenshot("upload-check")
+            return results
+
+        if not self.logged_in():
+            return fail("Logged in", "This account's browser isn't logged in to TikTok. Use Account → Log in.")
+        ok("Logged in")
+        if expected_user:
+            try:
+                self.check_user(expected_user)
+            except BrowserError as exc:
+                return fail("Right account", str(exc))
+            ok("Right account", f"@{expected_user.lstrip('@')}")
+        try:
+            self._open_upload_page()
+        except BrowserError as exc:
+            return fail("Upload page opens", str(exc))
+        ok("Upload page opens")
+        try:
+            file_input = self._file_input(timeout=30)
+        except Exception:
+            return fail("Video picker", "The upload page has no file picker any more; TikTok has changed it.")
+        ok("Video picker")
+        if test_video is None:
+            return results
+
+        file_input.set_input_files(str(test_video))
+        try:
+            if not self._caption_editor(timeout=60):
+                return fail("Caption box", "The caption box didn't appear after choosing a video.")
+            ok("Caption box")
+            self._dismiss_popups()
+            if self._privacy_box(timeout=8):
+                ok("Who can watch")
+            else:  # posting still works without it (TikTok's default is used), so it's only a warning
+                results.append(("Who can watch", "warn", "Not found, so posts would use TikTok's default privacy."))
+            end = time.time() + 30
+            while time.time() < end and not self._post_button().count():
+                self._sleep(1)
+            if not self._post_button().count():
+                return fail("Post button", "The Post button wasn't found.")
+            ok("Post button", "found; not clicked")
+        finally:
+            self._discard_upload()
+        return results
+
+    def _discard_upload(self) -> None:
+        """Throw away a video put in the uploader by check_upload_page(), so it isn't left as a draft."""
+        try:
+            for sel in ("button:has-text('Discard')", "div[role='dialog'] button:has-text('Discard')"):
+                loc = self.page.locator(sel)
+                if loc.count() and loc.first.is_visible():
+                    loc.first.click(timeout=3000)
+                    self.page.wait_for_timeout(800)
+            self.page.goto("about:blank")  # dialogs ("leave this page?") are accepted by __enter__'s handler
+        except Exception:
+            pass
 
     def _finish_post(self) -> None:
         end = time.time() + 180

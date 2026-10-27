@@ -101,6 +101,7 @@ def post_item(store: Store, item_id: str, s: Settings, account: Account, log: Lo
         item.status = "uploading"
         item.attempts += 1
         item.last_error = ""
+        item.upload_started_at = time.time()
     store.save()
     try:
         result = tiktok.post(item, account.apply(s), account, log, cancelled, progress)
@@ -188,6 +189,26 @@ def autopilot_pick(store: Store, accounts: Accounts | list[Account], s: Settings
         if item and (best is None or (item.planned_at or 0) < (best[1].planned_at or 0)):
             best = (a, item)
     return best
+
+
+UPLOAD_CHECK_EVERY = 20 * 3600  # the quick upload-page check runs about once a day per autopilot account
+UPLOAD_CHECK_QUIET = 30 * 60  # and never this close before a post is due
+
+
+def upload_check_due(store: Store, accounts: Accounts | list[Account], s: Settings,
+                     now: float | None = None) -> Account | None:
+    """An autopilot account whose TikTok upload page is due its daily check (browser method only)."""
+    now = time.time() if now is None else now
+    if s.upload_method != "browser":
+        return None
+    for a in accounts:
+        if not can_autopost(a, s) or now - a.upload_check_at < UPLOAD_CHECK_EVERY:
+            continue
+        nxt = next_post(store, a.id)
+        if nxt and nxt.planned_at and nxt.planned_at - now < UPLOAD_CHECK_QUIET:
+            continue
+        return a
+    return None
 
 
 def next_post(store: Store, account_id: str | None = None) -> VideoItem | None:

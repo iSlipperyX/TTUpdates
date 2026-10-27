@@ -206,3 +206,16 @@ def sample_frames(src: Path, duration: float, count: int, width: int = 512) -> l
         if out.returncode == 0 and out.stdout:
             frames.append(out.stdout)
     return frames
+
+
+def blank_clip(path: Path) -> Path:
+    """A 3 s black 9:16 clip with silent sound, for checking TikTok's uploader without posting a real video."""
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.stem + ".part" + path.suffix)
+    _run([ffmpeg_exe(), "-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=black:s=1080x1920:r=30:d=3",
+          "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(tmp)])
+    tmp.replace(path)
+    return path
