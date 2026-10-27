@@ -63,7 +63,6 @@ class Settings:
     ideal_max_len: float = 45.0
     target_lufs: float = -14.0
     # AI (optional)
-    ai_enabled: bool = False
     ai_api_key: str = ""
     ai_model: str = "claude-opus-5-5"
     ai_niche: str = ""  # e.g. "podcast clips about startups", helps captions and scoring
@@ -91,12 +90,14 @@ class Settings:
     # Ready to upload (ready.py): clips arrive from watched folders, you post them yourself
     watch_folders: list[str] = field(default_factory=list)  # e.g. ClipMonster's Automation folder
     watch_target: str = "library"  # library | spread (shared between accounts) | an account id
+    setup_done: bool = False  # first-run setup finished (or skipped); existing installs count as done
     clipmonster_offered: str = ""  # the ClipMonster folder the app last offered to watch ("" = never asked)
     watch_ai: bool = False  # AI caption each imported clip (one Claude call per clip)
     watch_hashtags: bool = True  # AI hashtags for each imported clip (a quick text-only call, needs a key)
     remind_to_post: bool = True  # notify when a queued video's time comes (accounts with autopilot off)
     morning_summary: bool = True  # one notification a day: what's ready for each account
     ready_folder: str = ""  # "" = Videos\TikTok Ready; where "Copy to a folder" puts clips + caption files
+    phone_folder: str = ""  # phone hand-off (phone.py): today's clips kept here, e.g. OneDrive\TikTok Ready; "" = off
     last_summary_day: str = ""
     share_results: bool = True  # results.py: tell ClipMonster how its clips did (results.json)
     # Official TikTok API (optional, needs your own developer app)
@@ -125,6 +126,8 @@ class Settings:
             return cls()
         known = {f.name for f in fields(cls)}
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
+        if "setup_done" not in data:  # saved by a version before first-run setup: not a new install
+            s.setup_done = True
         if isinstance(s.watch_folders, str):  # hand-edited, or a single folder written as text
             s.watch_folders = [s.watch_folders]
         s.watch_folders = [str(f) for f in s.watch_folders or [] if f]

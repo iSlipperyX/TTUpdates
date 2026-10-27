@@ -156,9 +156,10 @@ def test_export_copies_ready_clips_with_caption_files(tmp_path):
     store.enqueue([i.id for i in sorted(items, key=lambda i: i.title, reverse=True)], a.id)  # good, then fine
     folder, n = ready.export_ready(store, a, Settings(), tmp_path / "Ready", now=NOW)
     assert n == 2 and folder == tmp_path / "Ready" / "@cats" / "2026-10-27"
-    assert sorted(p.name for p in folder.iterdir()) == ["01 - good.mp4", "01 - good.txt", "02 - fine.mp4",
-                                                         "02 - fine.txt"]
-    assert "He quit on air" in (folder / "01 - good.txt").read_text(encoding="utf-8")
+    # Named by ClipMonster's hook when it wrote one (that's how the Ready page shows them), else the title
+    assert sorted(p.name for p in folder.iterdir()) == ["01 - He quit on air.mp4", "01 - He quit on air.txt",
+                                                         "02 - fine.mp4", "02 - fine.txt"]
+    assert "He quit on air" in (folder / "01 - He quit on air.txt").read_text(encoding="utf-8")
     assert ready.export_ready(store, a, Settings(), tmp_path / "Ready", now=NOW)[1] == 2  # again: no errors
 
 

@@ -71,6 +71,7 @@ class AppState(QObject):
     account_switched = Signal()  # the window now shows a different account
     jobs_changed = Signal()
     message = Signal(str)  # log line for the activity panel
+    phone_synced = Signal()  # the phone folder was updated (or couldn't be): phone_result / phone_error
 
     def __init__(self):
         super().__init__()
@@ -80,6 +81,9 @@ class AppState(QObject):
         # The last look at the watched folders (ready.watch_report), for the Ready page
         self.watch_reports: list = []
         self.watch_checked_at = 0.0
+        # The last update of the phone folder (phone.sync) and why the last try failed, if it did
+        self.phone_result = None
+        self.phone_error = ""
         if self.store.adopt(self.accounts.ids(), self.accounts.items[0].id):
             self.store.save()
         for a in self.accounts:  # e.g. the account made from a 1.0 install: its @name was in the stats

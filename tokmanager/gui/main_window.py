@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import ai, jobs, ready, safefile, updater
+from .. import ai, jobs, phone, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -29,11 +29,13 @@ from .queue_page import QueuePage
 from .ready_page import ReadyPage
 from .settings_dialog import SettingsDialog
 from .state import AppState, Job
-from .widgets import badge_for
+from .widgets import badge_for, short
 
 AUTOPILOT_CHECK_MS = 30_000
 WATCH_CHECK_MS = 3 * 60_000
 FIRST_WATCH_CHECK_MS = 8_000
+PHONE_SYNC_DELAY_MS = 4_000  # after a change, so a burst of them (marking several posted) is one update
+PHONE_CHECK_MS = 10 * 60_000  # also notices clips deleted on the phone and the day changing
 UPDATE_CHECK_MS = 6 * 3600 * 1000
 FIRST_UPDATE_CHECK_MS = 20_000
 AUTO_INSTALL_QUIET_MINUTES = 20  # don't restart for an update if a post is due this soon
@@ -118,7 +120,6 @@ class MainWindow(QMainWindow):
             hl.addWidget(b)
             self.stack.addWidget(page)
         self.nav.idClicked.connect(self.stack.setCurrentIndex)
-        self.nav_buttons[0].setChecked(True)
         hl.addStretch(1)
         self.job_label = QLabel("")
         self.job_label.setStyleSheet(f"color:{theme.MUTED};")
@@ -166,10 +167,12 @@ class MainWindow(QMainWindow):
         state.message.connect(self._show_line)
         state.jobs_changed.connect(self._jobs_changed)
         self.queue.post_requested.connect(self.post)
+        self.queue.ready_requested.connect(lambda: self.nav_buttons[1].click())
         self.ready.edit_requested.connect(self._edit_in_queue)
         self.ready.import_requested.connect(lambda: self.watch_tick(manual=True))
         self.ready.settings_requested.connect(lambda: self.open_settings("Ready to upload"))
         self.ready.watch_clipmonster_requested.connect(lambda: self.offer_clipmonster(asked=True))
+        self.ready.phone_sync_requested.connect(self.phone_sync)
         self.account.login_requested.connect(self.login)
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
@@ -184,7 +187,9 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, activated=lambda n=n: self._switch_to_number(n))
         self._warned_cant_post: set[str] = set()
         self._missing_folders: set[str] = set()
+        self._setup = None  # the first-run setup window while it's open
         self._update_account_button()
+        self.show_start_page()
 
         self._make_tray()
         self.autopilot_timer = QTimer(self, interval=AUTOPILOT_CHECK_MS, timeout=self.autopilot_tick)
@@ -198,6 +203,14 @@ class MainWindow(QMainWindow):
         self.watch_timer.start()
         QTimer.singleShot(FIRST_WATCH_CHECK_MS, self.watch_tick)
         QTimer.singleShot(FIRST_WATCH_CHECK_MS // 2, self.offer_clipmonster)
+        # Phone folder: the next day's clips for posting from the phone, kept up to date by itself.
+        self._phone_error = ""
+        self.phone_soon = QTimer(self, singleShot=True, interval=PHONE_SYNC_DELAY_MS, timeout=self.phone_sync)
+        self.phone_timer = QTimer(self, interval=PHONE_CHECK_MS, timeout=self.phone_sync)
+        self.phone_timer.start()
+        state.library_changed.connect(self.phone_soon.start)
+        state.account_changed.connect(self.phone_soon.start)
+        self.phone_soon.start()
         # Updates: a first check shortly after start, then every few hours.
         self.pending_release: updater.Release | None = None
         self._staged: tuple[Path, updater.Release] | None = None
@@ -219,8 +232,17 @@ class MainWindow(QMainWindow):
             self.hide()
         else:
             self.show()
+            if not state.settings.setup_done:
+                QTimer.singleShot(700, self.run_setup)
         if safefile.notices:
             QTimer.singleShot(600, self._show_recovered)
+
+    def show_start_page(self) -> None:
+        """The page for how the shown account posts: Ready (by hand) or Queue (autopilot). The Library when
+        it's empty and no folder is watched, so there's somewhere to drop the first clips."""
+        st = self.state
+        empty = not st.store.items and not any(st.settings.watch_folders)
+        self.nav_buttons[0 if empty else 2 if st.active.autopilot else 1].click()
 
     def _show_recovered(self) -> None:
         """A saved file was damaged and came back from a backup (or couldn't): say so once."""
@@ -249,7 +271,7 @@ class MainWindow(QMainWindow):
         self.log_toggle.setText(("▾" if vis else "▸") + " Activity")
 
     def _jobs_changed(self) -> None:
-        jobs_ = [j for j in self.state.jobs if j.kind not in ("update", "watch")]  # background checks stay silent
+        jobs_ = [j for j in self.state.jobs if j.kind not in ("update", "watch", "phone")]  # background work stays quiet
         if not jobs_:
             self.job_label.setText("")
             self.job_bar.hide()
@@ -282,12 +304,12 @@ class MainWindow(QMainWindow):
             return
         account = st.accounts.get(item.account)
         if account is None:
-            QMessageBox.warning(self, "Not queued", f"“{item.name}” isn't in an account's queue.")
+            QMessageBox.warning(self, "Not queued", f"“{item.headline}” isn't in an account's queue.")
             return
         if not item.exists():
             QMessageBox.warning(self, "Missing file", f"The video file is missing:\n{item.path}")
             return
-        job = Job(f"Posting “{item.name}” to {account.handle}",
+        job = Job(f"Posting “{short(item.headline)}” to {account.handle}",
                   lambda j: jobs.post_item(st.store, item_id, st.settings, account, j.log, j.cancelled, j.progress),
                   kind="post")
         job.item_id = item_id
@@ -295,8 +317,8 @@ class MainWindow(QMainWindow):
         job.signals.progress.connect(lambda m: self.job_label.setText(f"{account.handle}: {m}"))
 
         def ok(it):
-            self._log(f"✔ Posted “{it.name}” to {account.handle}.")
-            self._notify(f"Posted to {account.handle}", it.name)
+            self._log(f"✔ Posted “{it.headline}” to {account.handle}.")
+            self._notify(f"Posted to {account.handle}", it.headline)
             st.library_changed.emit()
 
         def fail(msg):
@@ -308,7 +330,7 @@ class MainWindow(QMainWindow):
             if msg != "Cancelled":
                 self._notify(f"Couldn't post to {account.handle}", msg, error=True)
 
-        self._log(f"Posting “{item.name}” to {account.handle}…")
+        self._log(f"Posting “{item.headline}” to {account.handle}…")
         st.run(job, pool="tiktok", on_success=ok, on_failure=fail)
         st.library_changed.emit()
 
@@ -327,7 +349,7 @@ class MainWindow(QMainWindow):
         self._warn_cant_post()
         if pick:
             account, item = pick
-            self._log(f"Autopilot: “{item.name}” is due on {account.handle}.")
+            self._log(f"Autopilot: “{item.headline}” is due on {account.handle}.")
             self.post(item.id)
         elif not st.busy("check"):
             account = jobs.upload_check_due(st.store, st.accounts, st.settings)
@@ -342,8 +364,8 @@ class MainWindow(QMainWindow):
         s = st.settings
         if s.remind_to_post:
             for a, item in ready.reminders(st.store, st.accounts, s):
-                self._log(f"⏰ Time to post “{item.name}” on {a.handle}. It's at the top of the Ready page.")
-                self._notify(f"Time to post on {a.handle}", item.name, always=True)
+                self._log(f"⏰ Time to post “{item.headline}” on {a.handle}. It's at the top of the Ready page.")
+                self._notify(f"Time to post on {a.handle}", item.headline, always=True)
                 st.save_soon()
         day = ready.summary_due(s, st.accounts)
         if day:
@@ -392,14 +414,46 @@ class MainWindow(QMainWindow):
             for it in items:
                 account = st.account_for(it)
                 if s.watch_ai:  # the full rating writes a caption and hashtags
-                    job = Job(f"AI caption for {it.name}",
+                    job = Job(f"AI caption for {short(it.headline)}",
                               lambda j, i=it.id, a=account: jobs.ai_item(st.store, i, s, j.log, account=a), kind="ai")
                 else:  # just hashtags: one quick text-only call, kept off clips that already have some
-                    job = Job(f"AI hashtags for {it.name}", lambda j, i=it.id, a=account:
+                    job = Job(f"AI hashtags for {short(it.headline)}", lambda j, i=it.id, a=account:
                               jobs.ai_hashtags(st.store, i, s, a, j.log, only_if_empty=True), kind="ai")
                 st.run(job, on_success=lambda _it: (st.save_soon(), st.library_changed.emit()))
 
         st.run(Job("Checking watched folders", work, kind="watch"), on_success=found, quiet=not manual)
+
+    def phone_sync(self) -> None:
+        """Bring the phone folder up to date (on a worker thread): upcoming clips in, posted ones out."""
+        st = self.state
+        s = st.settings
+        if not s.phone_folder:
+            return
+        if st.busy("phone"):
+            self.phone_soon.start()  # changed again while copying: go again afterwards
+            return
+        folder = s.phone_folder
+        st.replan()  # posting times decide what goes in
+
+        def done(result: phone.SyncResult) -> None:
+            st.phone_result, st.phone_error = result, ""
+            self._phone_error = ""
+            if result.copied or result.removed:
+                bits = [f"{result.copied} clip{'s' * (result.copied != 1)} copied"] if result.copied else []
+                if result.removed:
+                    bits.append(f"{result.removed} taken out")
+                self._log(f"📱 Phone folder updated: {', '.join(bits)}. {len(result.on_phone)} there now.")
+            st.phone_synced.emit()
+
+        def failed(msg: str) -> None:
+            st.phone_error = msg
+            if msg != self._phone_error:  # said once; the Ready page keeps showing it
+                self._phone_error = msg
+                self._log(f"⚠ Couldn't update the phone folder {folder}: {msg}")
+            st.phone_synced.emit()
+
+        st.run(Job("Updating the phone folder", lambda j: phone.sync(st.store, st.accounts, s, folder), kind="phone"),
+               on_success=done, on_failure=failed, quiet=True)
 
     def offer_clipmonster(self, asked: bool = False) -> None:
         """Offer to watch ClipMonster's Automation folder when it's set up here but not watched.
@@ -412,8 +466,9 @@ class MainWindow(QMainWindow):
         st = self.state
         s = st.settings
         folder = ready.clipmonster_unwatched(s)
-        if folder is None or (not asked and (s.clipmonster_offered == str(folder) or not self.isVisible())):
-            return  # started in the tray: the Ready page says so when the window is opened
+        if folder is None or (not asked and (s.clipmonster_offered == str(folder) or not self.isVisible()
+                                             or not s.setup_done)):
+            return  # started in the tray (the Ready page says so when the window is opened), or setup asks
         s.clipmonster_offered = str(folder)
         st.save_settings()
         dlg = ClipMonsterOffer(self, folder, [(a.id, a.label) for a in st.accounts], st.active.id)
@@ -426,6 +481,29 @@ class MainWindow(QMainWindow):
         self._log(f"Watching ClipMonster's folder {folder}. New clips come in every few minutes.")
         self.nav_buttons[1].click()  # the Ready page, where they'll show up
         self.watch_tick(manual=True)
+
+    def run_setup(self) -> None:
+        """The first-run setup window (on first start, or again from Settings)."""
+        from .setup_wizard import SetupWizard
+
+        if self._setup is not None:
+            self._setup.raise_()
+            self._setup.activateWindow()
+            return
+        dlg = SetupWizard(self.state, self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.login_requested.connect(lambda: (self.state.switch_account(dlg.account.id), self.login(parent=dlg)))
+        dlg.setup_finished.connect(self._setup_finished)
+        dlg.destroyed.connect(lambda: setattr(self, "_setup", None))
+        self._setup = dlg
+        dlg.show()
+
+    def _setup_finished(self, finished: bool) -> None:
+        if not finished:
+            return
+        self.show_start_page()
+        self.watch_tick(manual=True)
+        self.phone_sync()
 
     def _edit_in_queue(self, item_id: str) -> None:
         self.nav_buttons[2].click()
@@ -443,14 +521,16 @@ class MainWindow(QMainWindow):
                 self._log(f"⚠ {msg}")
                 self._notify("Autopilot can't post", msg, error=True)
 
-    def login(self) -> None:
+    def login(self, parent: QWidget | None = None) -> None:
+        """Log the shown account in to TikTok. `parent`: the window the login dialog sits over (e.g. setup)."""
         st = self.state
         s = st.settings
         a = st.active
         if st.account_busy(a.id, ("login",)):
             return
+        parent = parent or self
         result: dict = {}
-        dialog = None if s.upload_method == "api" else LoginDialog(self, a.label, lambda: job.cancel())
+        dialog = None if s.upload_method == "api" else LoginDialog(parent, a.label, lambda: job.cancel())
 
         def work(j: Job):
             if s.upload_method == "api":
@@ -494,7 +574,7 @@ class MainWindow(QMainWindow):
             st.save_accounts()
             st.accounts_edited()
             if result.get("duplicate"):
-                QMessageBox.warning(self, "Same TikTok account twice",
+                QMessageBox.warning(parent, "Same TikTok account twice",
                                     f"@{a.username} is also added as “{result['duplicate']}”. Both entries would post "
                                     "to the same TikTok account. Remove one in Manage accounts, or log this one in "
                                     "to a different TikTok account.")
@@ -502,7 +582,7 @@ class MainWindow(QMainWindow):
         def failed(msg: str) -> None:
             finished()
             if msg != "Cancelled":
-                QMessageBox.warning(self, "Login didn't finish", msg)
+                QMessageBox.warning(parent, "Login didn't finish", msg)
 
         job = Job(f"Logging {a.label} in to TikTok", work, kind="login")
         job.account_id = a.id
@@ -664,7 +744,7 @@ class MainWindow(QMainWindow):
             st.store.enqueue([item_id], account.id)
         st.save_soon()
         st.library_changed.emit()
-        self._log(f"“{it.name}” is back in {account.handle}'s queue.")
+        self._log(f"“{it.headline}” is back in {account.handle}'s queue.")
 
     # --- accounts -------------------------------------------------------------------
 
@@ -734,6 +814,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.state.settings, self, on_check_updates=lambda: self.check_for_updates(manual=True),
                              accounts=[(a.id, a.label) for a in self.state.accounts],
                              tab=tab if isinstance(tab, str) else "")
+        folder = self.state.settings.phone_folder
         if dlg.exec():
             dlg.apply()
             self.state.save_settings()
@@ -748,6 +829,11 @@ class MainWindow(QMainWindow):
             self.state.library_changed.emit()
             self.state.account_changed.emit()
             self._log("Settings saved.")
+            if self.state.settings.phone_folder != folder:
+                self.state.phone_result, self.state.phone_error = None, ""
+                self.phone_sync()
+            if dlg.setup_requested:
+                self.run_setup()
 
     # --- tray / window ----------------------------------------------------------------
 
@@ -791,6 +877,8 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if not self.state.settings.setup_done:  # started in the tray on a fresh install
+            self.run_setup()
 
     def closeEvent(self, e: QCloseEvent) -> None:  # noqa: N802
         if not self._quitting and self.tray and self.state.settings.minimize_to_tray:

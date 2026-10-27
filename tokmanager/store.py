@@ -15,7 +15,6 @@ from .config import app_dir
 from .media import VIDEO_EXTS
 
 # Item status lifecycle: new -> queued -> uploading -> posted | failed
-STATUSES = ("new", "queued", "uploading", "posted", "failed")
 # last_error of a video whose upload was cut off by the app closing. It may be on TikTok already,
 # so it is never retried by itself; the next stats refresh marks it posted if it finds it there.
 INTERRUPTED = ("The app closed while this was uploading, so it may have been posted. "
@@ -79,6 +78,12 @@ class VideoItem:
     @property
     def name(self) -> str:
         return self.title or Path(self.path).stem
+
+    @property
+    def headline(self) -> str:
+        """What to call the clip where you pick and post it: ClipMonster's hook when it wrote one
+        (rather than a file name like "01 - 1-37 - clip"), else the title."""
+        return " ".join(self.hook.split()) or self.name
 
     def exists(self) -> bool:
         return Path(self.path).is_file()

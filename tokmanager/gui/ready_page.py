@@ -1,11 +1,13 @@
 """Ready page: the shown account's videos waiting to be posted, each with its caption ready to copy.
 
 For posting by hand: copy the caption, drag the file into TikTok's upload page, then click
-"Mark as posted". Clips can arrive here by themselves from watched folders (Settings → Ready to upload).
+"Mark as posted". Clips can arrive here by themselves from watched folders (Settings → Ready to upload),
+and the next day's can wait in a phone folder too (phone.py). Everything works from the keyboard (KEYS).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import subprocess
 import sys
@@ -14,19 +16,32 @@ import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from .. import ai, ready, schedule
+from .. import ai, phone, ready, schedule
 from ..scoring import grade
 from ..store import VideoItem
 from . import theme
 from .state import AppState, Job
-from .widgets import Thumb, badge_for, fmt_dur, label
+from .widgets import Thumb, badge_for, fmt_dur, label, short
 
 MAX_CARDS = 60
 UNDO_SECONDS = 20
+# Keyboard shortcuts on the Ready page: keys, what they do (ReadyPage._key), how the hint line says it
+KEYS = (
+    (("Down", "J"), "next", "↓ J next"),
+    (("Up", "K"), "previous", "↑ K previous"),
+    (("C",), "copy", "C copy caption"),
+    (("H",), "tags", "H hashtags"),
+    (("F",), "show", "F show file"),
+    (("P",), "play", "P play"),
+    (("T",), "ai", "T ✨ hashtags"),
+    (("E",), "edit", "E edit"),
+    (("Return", "Enter"), "posted", "Enter mark as posted"),
+    (("Ctrl+Z",), "undo", "Ctrl+Z undo"),
+)
 
 
 def reveal(path: str) -> None:
@@ -49,6 +64,7 @@ class ReadyCard(QFrame):
     def __init__(self, page: "ReadyPage", item: VideoItem, position: int):
         super().__init__()
         self.setObjectName("panel")
+        self.page = page
         self.item = item
         st = page.state
         account = st.account_for(item)
@@ -62,8 +78,9 @@ class ReadyCard(QFrame):
         body = QVBoxLayout()
         body.setSpacing(6)
         head = QHBoxLayout()
-        title = label(f"{position}. {item.name}", "h2", wrap=True)
-        head.addWidget(title, 1)
+        self.title = label(f"{position}. {_esc(item.headline)}", "h2", wrap=True)
+        self.title.setToolTip(Path(item.path).name)
+        head.addWidget(self.title, 1)
         total = item.total
         pill = QLabel("—" if total is None else f"{total:.0f}  {grade(total)}")
         colour = theme.score_colour(total)
@@ -90,9 +107,11 @@ class ReadyCard(QFrame):
             facts.append(f"from {_esc(item.source_channel)}")
         if not item.exists():
             facts.append(f"<span style='color:{theme.BAD}'>file missing</span>")
-        info = label(" · ".join(facts), "muted", wrap=True)
-        info.setTextFormat(Qt.RichText)
-        body.addWidget(info)
+        elif item.id in page.on_phone:
+            facts.append("📱 in your phone folder")
+        self.info = label(" · ".join(facts), "muted", wrap=True)
+        self.info.setTextFormat(Qt.RichText)
+        body.addWidget(self.info)
         notes = []
         if item.credit:
             notes.append(f"Creative Commons: the caption credits {_esc(item.source_channel)}. Keep that line.")
@@ -102,6 +121,15 @@ class ReadyCard(QFrame):
             warn.setTextFormat(Qt.RichText)
             warn.setStyleSheet(f"color:{theme.WARN};")
             body.addWidget(warn)
+        self.gone: QLabel | None = None
+        if item.id in page.gone:
+            link = f"style='color:{theme.ACCENT_2}'"
+            self.gone = label(f"📱 You deleted this from your phone folder. Posted it? <a href='posted' {link}>"
+                              f"Mark as posted</a> · <a href='copy-back' {link}>Put it back in the folder</a>", wrap=True)
+            self.gone.setTextFormat(Qt.RichText)
+            self.gone.linkActivated.connect(lambda href: self.posted.emit(item.id) if href == "posted"
+                                            else page.copy_back(item.id))
+            body.addWidget(self.gone)
 
         self.text = ready.post_text(item, account, st.settings)
         caption = label(_esc(self.text), wrap=True)
@@ -125,30 +153,46 @@ class ReadyCard(QFrame):
         self.ai_tags_btn.setToolTip("Claude writes hashtags that fit this clip and the account's niche, learning "
                                     "from your best posts (replaces the clip's own hashtags)")
         self.ai_tags_btn.clicked.connect(lambda: page.ai_hashtags([item.id]))
-        show = QPushButton("Show file")
-        show.setToolTip("Opens the folder with the video selected, so you can drag it into TikTok's upload page")
-        show.clicked.connect(lambda: reveal(item.path))
-        play = QPushButton("▶ Play")
-        play.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(item.path)))
-        edit = QPushButton("Edit…")
-        edit.setToolTip("Change the caption, hashtags or posting time on the Queue page")
-        edit.clicked.connect(lambda: self.edit.emit(item.id))
+        self.show_btn = QPushButton("Show file")
+        self.show_btn.setToolTip("Opens the folder with the video selected, so you can drag it into TikTok's "
+                                 "upload page")
+        self.show_btn.clicked.connect(lambda: reveal(item.path))
+        self.play_btn = QPushButton("▶ Play")
+        self.play_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(item.path)))
+        self.edit_btn = QPushButton("Edit…")
+        self.edit_btn.setToolTip("Change the caption, hashtags or posting time on the Queue page")
+        self.edit_btn.clicked.connect(lambda: self.edit.emit(item.id))
         back = QPushButton("Not this one")
         back.setObjectName("danger")
         back.setToolTip("Take it out of the queue (it stays in the Library)")
         back.clicked.connect(lambda: self.unqueue.emit(item.id))
-        done = QPushButton("✓ Mark as posted")
-        done.setObjectName("primary")
-        done.setToolTip("You've posted it on TikTok: it moves to the account's post history")
-        done.clicked.connect(lambda: self.posted.emit(item.id))
-        for b in (self.copy_btn, self.tags_btn, self.ai_tags_btn, show, play, edit, back):
+        self.done_btn = QPushButton("✓ Mark as posted")
+        self.done_btn.setObjectName("primary")
+        self.done_btn.setToolTip("You've posted it on TikTok: it moves to the account's post history")
+        self.done_btn.clicked.connect(lambda: self.posted.emit(item.id))
+        for b in (self.show_btn, self.play_btn):
+            b.setEnabled(item.exists())
+        for b in (self.copy_btn, self.tags_btn, self.ai_tags_btn, self.show_btn, self.play_btn, self.edit_btn, back):
             buttons.addWidget(b)
-            b.setEnabled(b.isEnabled() and (item.exists() or b in (edit, back, self.copy_btn, self.tags_btn,
-                                                                   self.ai_tags_btn)))
         buttons.addStretch(1)
-        buttons.addWidget(done)
+        buttons.addWidget(self.done_btn)
+        for b in (self.copy_btn, self.tags_btn, self.ai_tags_btn, self.show_btn, self.play_btn, self.edit_btn,
+                  back, self.done_btn):
+            b.pressed.connect(lambda: page.set_current(item.id))  # the keys then act on this card
         body.addLayout(buttons)
         lay.addLayout(body, 1)
+
+    def set_current(self, on: bool) -> None:
+        """The card the keyboard shortcuts act on is outlined."""
+        name = "panelCurrent" if on else "panel"
+        if self.objectName() != name:
+            self.setObjectName(name)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802 - Qt API
+        self.page.set_current(self.item.id)
+        super().mousePressEvent(e)
 
     def _copy(self, button: QPushButton, text: str) -> None:
         QApplication.clipboard().setText(text)
@@ -226,6 +270,7 @@ class ReadyPage(QWidget):
     import_requested = Signal()
     settings_requested = Signal()
     watch_clipmonster_requested = Signal()
+    phone_sync_requested = Signal()  # update the phone folder now
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -233,6 +278,10 @@ class ReadyPage(QWidget):
         self.setObjectName("page")
         self._undo: tuple[str, str] | None = None  # (item id, account id) of the last "Mark as posted"
         self.tagging: set[str] = set()  # items Claude is writing hashtags for
+        self.current = ""  # id of the card the keys act on
+        self._current_pos = 0  # its place, so the next card takes over when it leaves
+        self.on_phone: set[str] = set()  # items in the phone folder (phone.sync's last result)
+        self.gone: set[str] = set()  # items deleted from the phone folder, waiting to be marked posted
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
@@ -281,6 +330,10 @@ class ReadyPage(QWidget):
         self.counts = label("", "muted", wrap=True)
         self.counts.setTextFormat(Qt.RichText)
         root.addWidget(self.counts)
+        self.phone_line = label("", "muted", wrap=True)
+        self.phone_line.setTextFormat(Qt.RichText)
+        self.phone_line.linkActivated.connect(self._link)
+        root.addWidget(self.phone_line)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -290,11 +343,19 @@ class ReadyPage(QWidget):
         self.empty.setTextFormat(Qt.RichText)
         self.empty.linkActivated.connect(self._link)
         root.addWidget(self.empty, 1)
+        self.keys_hint = label("Keys: " + "  ·  ".join(hint for _, _, hint in KEYS), "muted", wrap=True)
+        self.keys_hint.setStyleSheet("font-size: 8.5pt;")
+        root.addWidget(self.keys_hint)
+        # Only while this page is showing (Qt skips shortcuts of hidden widgets), so typing elsewhere is safe.
+        for keys, action, _ in KEYS:
+            for key in keys:
+                QShortcut(QKeySequence(key), self, activated=lambda a=action: self._key(a))
 
         self._sig = None
         state.library_changed.connect(self.refresh)
         state.account_switched.connect(self.refresh)
         state.account_changed.connect(self.refresh)
+        state.phone_synced.connect(self.refresh)
         self.refresh()
 
     def refresh(self) -> None:
@@ -306,12 +367,16 @@ class ReadyPage(QWidget):
         self.badge.setVisible(multi)
         self.badge.setPixmap(badge_for(a, 24))
         queued = [i for i in items if i.status == "queued"]
-        self.summary.setText((f"{a.label}: " if multi else "") +
-                             (f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued
-                              else "Nothing waiting"))
+        today = dt.datetime.combine(dt.date.today(), dt.time.min).timestamp()
+        done = st.store.posts_since(today, a.id)
+        text = f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued else \
+            "All done for now" if done else "Nothing waiting"
+        self.summary.setText((f"{a.label}: " if multi else "") + text + (f" · {done} posted today ✓" if done else ""))
         folders = [f for f in st.settings.watch_folders if f]
         self._show_hint(folders)
+        self._show_phone()
         self.export_btn.setEnabled(bool(items))
+        self.export_btn.setVisible(not st.settings.phone_folder)  # the phone folder does this by itself
         self.import_btn.setEnabled(bool(folders))
         if not folders:
             more = (f"Queue videos from the Library, or <a href='settings' style='color:{theme.ACCENT_2}'>watch a "
@@ -323,13 +388,18 @@ class ReadyPage(QWidget):
         self.empty.setText(f"Nothing is waiting for {_esc(a.label)}.<br>{more}")
         self.scroll.setVisible(bool(items))
         self.empty.setVisible(not items)
+        self.keys_hint.setVisible(bool(items))
         untagged = self._untagged(items)
         self.all_tags_btn.setText(f"✨ Hashtags for {len(untagged)}")
         self.all_tags_btn.setVisible(len(untagged) > 1 and ai.has_key(st.settings))
         sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error,
-                i.id in self.tagging) for i in items]
+                i.id in self.tagging, i.id in self.on_phone, i.id in self.gone) for i in items]
         sig.append((a.id, a.default_hashtags, st.settings.caption_template))
+        ids = [i.id for i in items[:MAX_CARDS]]
+        if self.current not in ids:  # it was posted or taken out: the one after it (now in its place) takes over
+            self.current = ids[min(self._current_pos, len(ids) - 1)] if ids else ""
         if sig == self._sig:
+            self._mark_current()
             return
         self._sig = sig
         pos = self.scroll.verticalScrollBar().value()
@@ -347,6 +417,7 @@ class ReadyPage(QWidget):
             lay.addWidget(label(f"…and {len(items) - MAX_CARDS} more on the Queue page.", "muted"))
         lay.addStretch(1)
         self.scroll.setWidget(box)
+        self._mark_current()
         QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(pos))
 
     def _show_hint(self, folders: list[str]) -> None:
@@ -383,9 +454,62 @@ class ReadyPage(QWidget):
         self.take_btn.setText(f"Queue {len(waiting)} new clip{'s' * (len(waiting) != 1)} here")
         self.take_btn.setVisible(bool(waiting))
 
+    def _show_phone(self) -> None:
+        """The phone folder line: what's in it, or a way to start using one."""
+        st = self.state
+        s = st.settings
+        link = f"style='color:{theme.ACCENT_2}'"
+        result = st.phone_result
+        folder = s.phone_folder
+        if result is not None and not ready.same_folder(result.folder, folder or ""):
+            result = None  # from before the folder was changed
+        self.on_phone = set(result.on_phone) if result else set()
+        self.gone = set(result.gone) if result else set()
+        if not folder:
+            onedrive = phone.suggested_folder()
+            text = (f"📱 Post from your phone: <a href='phone-on' {link}>keep the next day's clips and captions in "
+                    f"OneDrive › {phone.FOLDER_NAME}</a>" if onedrive else "")
+        elif st.phone_error:
+            text = (f"<span style='color:{theme.WARN}'>📱 The phone folder couldn't be updated: "
+                    f"{_esc(st.phone_error)}</span> <a href='settings' {link}>Change it</a>")
+        elif result is None:
+            text = f"📱 Getting the next clips ready in {_esc(_folder_name(folder))}…"
+        else:
+            n = len(result.on_phone)
+            what = f"{n} clip{'s' * (n != 1)} due in the next 24 hours, with captions" if n else \
+                "nothing due in the next 24 hours"
+            text = (f"📱 Phone folder {_esc(_folder_name(folder))}: {what} · updated "
+                    f"{_ago(result.at)} · <a href='open-phone' {link}>Open</a>")
+        self.phone_line.setText(text)
+        self.phone_line.setVisible(bool(text))
+
+    def copy_back(self, item_id: str) -> None:
+        """A clip deleted from the phone folder that wasn't posted after all: copy it there again."""
+        folder = self.state.settings.phone_folder
+        if folder:
+            try:
+                phone.forget_gone(Path(folder), [item_id])
+            except OSError as exc:
+                QMessageBox.warning(self, "Phone folder", f"Couldn't change the phone folder.\n\n{exc}")
+                return
+            self.gone.discard(item_id)
+            self.phone_sync_requested.emit()
+
     def _link(self, href: str) -> None:
         st = self.state
-        if href == "watch-cm":
+        if href == "phone-on":
+            folder = phone.suggested_folder()
+            if folder is None:
+                return
+            st.settings.phone_folder = str(folder)
+            st.save_settings()
+            st.log(f"📱 The next day's clips will wait in {folder}, each with its caption. Open that folder in the "
+                   "OneDrive app on your phone.")
+            self.refresh()
+            self.phone_sync_requested.emit()
+        elif href == "open-phone":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(st.settings.phone_folder))
+        elif href == "watch-cm":
             self.watch_clipmonster_requested.emit()
         elif href == "target-here":
             st.settings.watch_target = st.active.id
@@ -421,7 +545,7 @@ class ReadyPage(QWidget):
                 st.save_soon()
                 st.library_changed.emit()
 
-            st.run(Job(f"AI hashtags for {item.name}",
+            st.run(Job(f"AI hashtags for {short(item.headline)}",
                        lambda j, i=item_id, a=account: jobs.ai_hashtags(st.store, i, st.settings, a, j.log), kind="ai"),
                    on_success=finished, on_failure=finished)
         self.refresh()
@@ -443,6 +567,43 @@ class ReadyPage(QWidget):
         box = self.scroll.widget()
         return box.findChildren(ReadyCard) if box else []
 
+    # --- keyboard -----------------------------------------------------------------
+
+    def current_card(self) -> ReadyCard | None:
+        return next((c for c in self.cards() if c.item.id == self.current), None)
+
+    def set_current(self, item_id: str) -> None:
+        self.current = item_id
+        self._mark_current()
+
+    def _mark_current(self) -> None:
+        cards = self.cards()
+        for n, c in enumerate(cards):
+            c.set_current(c.item.id == self.current)
+            if c.item.id == self.current:
+                self._current_pos = n
+
+    def _key(self, action: str) -> None:
+        cards = self.cards()
+        if action == "undo":
+            self.undo()
+            return
+        card = self.current_card()
+        if not cards:
+            return
+        if action in ("next", "previous"):
+            n = cards.index(card) if card else -1
+            n = max(0, min(len(cards) - 1, n + (1 if action == "next" else -1)))
+            self.set_current(cards[n].item.id)
+            self.scroll.ensureWidgetVisible(cards[n], 0, 40)
+            return
+        if card is None:
+            return
+        button = {"copy": card.copy_btn, "tags": card.tags_btn, "show": card.show_btn, "play": card.play_btn,
+                  "ai": card.ai_tags_btn, "edit": card.edit_btn, "posted": card.done_btn}[action]
+        if button.isEnabled():
+            button.click()
+
     # --- actions ------------------------------------------------------------------
 
     def mark_posted(self, item_id: str) -> None:
@@ -452,10 +613,10 @@ class ReadyPage(QWidget):
         if ready.mark_posted(st.store, item_id) is None:
             return
         self._undo = (item_id, account_id)
-        self.undo_btn.setText(f"Undo “{item.name[:30]}”")
+        self.undo_btn.setText(f"Undo “{short(item.headline, 30)}”")
         self.undo_btn.show()
         self._undo_timer.start()
-        st.log(f"✔ Marked “{item.name}” as posted on {st.accounts.label_for(account_id)}.")
+        st.log(f"✔ Marked “{item.headline}” as posted on {st.accounts.label_for(account_id)}.")
         st.save_soon()
         st.library_changed.emit()
 
@@ -466,6 +627,7 @@ class ReadyPage(QWidget):
         self._undo = None
         self.undo_btn.hide()
         if ready.unmark_posted(self.state.store, item_id, account_id):
+            self.current = item_id
             self.state.log("Put it back at the top of the queue.")
             self.state.save_soon()
             self.state.library_changed.emit()

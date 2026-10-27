@@ -40,6 +40,7 @@ QSS = f"""
 QMainWindow, QDialog {{ background: {BG}; }}
 QWidget#page {{ background: {BG}; }}
 QWidget#panel, QFrame#panel {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#panelCurrent {{ background: {PANEL}; border: 1px solid {ACCENT}; border-radius: 10px; }}
 QLabel#title {{ font-size: 15pt; font-weight: 700; }}
 QLabel#h2 {{ font-size: 11pt; font-weight: 600; color: {TEXT}; }}
 QLabel#muted, QLabel[muted="true"] {{ color: {MUTED}; }}
@@ -59,6 +60,11 @@ QPushButton:checked {{ background: {SELECT}; border-color: {ACCENT}; }}
 QPushButton#nav {{ background: transparent; border: none; border-radius: 8px; padding: 8px 14px; color: {MUTED}; font-weight: 600; }}
 QPushButton#nav:hover {{ color: {TEXT}; background: {PANEL}; }}
 QPushButton#nav:checked {{ color: {TEXT}; background: {PANEL_2}; }}
+QPushButton#segFirst, QPushButton#segMid, QPushButton#segLast {{ padding: 6px 16px; font-weight: 600; color: {MUTED}; }}
+QPushButton#segFirst {{ border-top-right-radius: 0; border-bottom-right-radius: 0; }}
+QPushButton#segMid {{ border-radius: 0; border-left: none; }}
+QPushButton#segLast {{ border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; }}
+QPushButton#segFirst:checked, QPushButton#segMid:checked, QPushButton#segLast:checked {{ color: {TEXT}; }}
 QPushButton#accountSwitch {{ background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 16px; padding: 5px 12px 5px 6px; font-weight: 600; text-align: left; }}
 QPushButton#accountSwitch:hover {{ border-color: {ACCENT}; }}
 QPushButton#accountSwitch::menu-indicator {{ subcontrol-position: right center; subcontrol-origin: padding; right: 8px; }}
@@ -103,6 +109,8 @@ QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:
 
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {BORDER}; background: {BG}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 8px; border: 1px solid {BORDER}; background: {BG}; }}
+QRadioButton::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QSplitter::handle {{ background: {BG}; }}
 QGroupBox {{ border: 1px solid {BORDER}; border-radius: 8px; margin-top: 14px; padding-top: 10px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {MUTED}; }}

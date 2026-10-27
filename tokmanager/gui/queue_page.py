@@ -1,22 +1,24 @@
-"""Queue page: the shown account's posting order (drag & drop), its schedule, post now or on autopilot."""
+"""Queue page: the shown account's posting order (drag & drop), its schedule, and how it posts (by hand or on autopilot)."""
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTime, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDateTimeEdit, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QGridLayout, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QStyle, QStyledItemDelegate, QTimeEdit, QVBoxLayout, QWidget)
 
 from .. import jobs, schedule
+from ..accounts import POSTING_MODES
 from ..scoring import grade
 from ..store import VideoItem
 from . import theme
 from .editor import PostEditor
 from .state import AppState
-from .widgets import badge_for, fmt_dur, label, panel, thumb_pixmap
+from .widgets import Segmented, badge_for, fmt_dur, label, panel, thumb_pixmap
 
 ID_ROLE = Qt.UserRole + 1
 
@@ -58,7 +60,7 @@ class QueueDelegate(QStyledItemDelegate):
         f.setPointSizeF(10)
         p.setFont(f)
         p.setPen(QColor(theme.TEXT))
-        title = p.fontMetrics().elidedText(item.name, Qt.ElideRight, text_w)
+        title = p.fontMetrics().elidedText(item.headline, Qt.ElideRight, text_w)
         p.drawText(QRectF(x, r.y() + 8, text_w, 20), Qt.AlignLeft | Qt.AlignVCenter, title)
 
         f.setBold(False)
@@ -79,7 +81,9 @@ class QueueDelegate(QStyledItemDelegate):
         p.drawText(QRectF(x, r.y() + 29, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(line, Qt.ElideRight, text_w))
         p.setPen(QColor(theme.MUTED))
-        sub = f"{fmt_dur(item.duration)}  ·  {(item.caption or 'no caption yet')[:120]}"
+        caption = " ".join(item.caption.split())
+        extra = caption if caption and caption != item.headline else Path(item.path).name  # not the title twice
+        sub = f"{fmt_dur(item.duration)}  ·  {extra[:120]}"
         p.drawText(QRectF(x, r.y() + 48, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(sub, Qt.ElideRight, text_w))
 
@@ -109,6 +113,7 @@ class QueueList(QListWidget):
 
 class QueuePage(QWidget):
     post_requested = Signal(str)  # item id
+    ready_requested = Signal()  # show the Ready page
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -224,18 +229,20 @@ class QueuePage(QWidget):
         sl.addLayout(grid)
         self.slots = label("", "muted", wrap=True)
         sl.addWidget(self.slots)
-        self.autopilot = QCheckBox("Autopilot: post automatically at these times")
-        self.autopilot.setToolTip("Keep TikTok Manager running (it can sit in the system tray) and it posts each "
-                                  "video when its time comes. Every account has its own switch; the tray menu "
-                                  "lists them all.")
-        sl.addWidget(self.autopilot)
+        mode_row = QHBoxLayout()
+        self.mode_title = label("Posting")
+        mode_row.addWidget(self.mode_title)
+        self.mode = Segmented(list(POSTING_MODES), on_pick=self._mode_picked)
+        mode_row.addWidget(self.mode, 1)
+        sl.addLayout(mode_row)
         self.next_label = label("", wrap=True)
+        self.next_label.setTextFormat(Qt.RichText)
+        self.next_label.linkActivated.connect(lambda _href: self.ready_requested.emit())
         sl.addWidget(self.next_label)
         for w in (self.per_day, self.gap):
             w.valueChanged.connect(self._schedule_changed)
         for w in (self.first, self.last):
             w.timeChanged.connect(self._schedule_changed)
-        self.autopilot.toggled.connect(self._autopilot_toggled)
         lay.addWidget(sched)
 
         pin_box = panel()
@@ -247,6 +254,7 @@ class QueuePage(QWidget):
         self.pin_edit = QDateTimeEdit()
         self.pin_edit.setDisplayFormat("ddd dd MMM yyyy  HH:mm")
         self.pin_edit.setCalendarPopup(True)
+        self.pin_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
         row = QHBoxLayout()
         row.addWidget(self.pin_edit, 1)
         self.pin_btn = QPushButton("Pin")
@@ -272,16 +280,16 @@ class QueuePage(QWidget):
     # --- data ---------------------------------------------------------------------
 
     def _load_schedule(self) -> None:
-        """Show the shown account's schedule and autopilot switch (without saving them back)."""
+        """Show the shown account's schedule and posting mode (without saving them back)."""
         a = self.state.active
-        widgets = (self.per_day, self.gap, self.first, self.last, self.autopilot)
+        widgets = (self.per_day, self.gap, self.first, self.last)
         for w in widgets:
             w.blockSignals(True)
         self.per_day.setValue(a.posts_per_day)
         self.gap.setValue(a.min_gap_minutes)
         self.first.setTime(QTime.fromString(a.first_post_time, "HH:mm"))
         self.last.setTime(QTime.fromString(a.last_post_time, "HH:mm"))
-        self.autopilot.setChecked(a.autopilot)
+        self.mode.set_value(a.mode)
         for w in widgets:
             w.blockSignals(False)
         multi = len(self.state.accounts) > 1
@@ -331,18 +339,21 @@ class QueuePage(QWidget):
         if failed:
             txt += f" · {failed} failed"
         self.summary.setText(txt)
-        self.slots.setText("Daily slots: " + ", ".join(t.strftime("%H:%M")
-                                                       for t in schedule.daily_slots(self.state.settings_for())))
         self._update_next()
         self._selection_changed()
 
     def _update_next(self) -> None:
+        """The daily times and what happens next, which depend on how the account posts."""
         a = self.state.active
+        what = "posting times" if a.autopilot else "reminder times"
+        self.slots.setText(f"Daily {what}: " + ", ".join(t.strftime("%H:%M")
+                                                        for t in schedule.daily_slots(self.state.settings_for())))
         q = [i for i in self.state.store.queue(a.id) if i.status == "queued" and i.planned_at]
         s = self.state.settings
         if not a.autopilot:
-            self.next_label.setText(f"<span style='color:{theme.MUTED}'>○ Off.</span> Videos only post when you click "
-                                    f"“Post selected now”.")
+            nxt = f" Next: <b>{_esc(q[0].headline)}</b> at {schedule.fmt_when(q[0].planned_at)}." if q else ""
+            self.next_label.setText(f"You post these yourself from the <a href='ready' style='color:{theme.ACCENT_2}'>"
+                                    f"Ready page</a>, with a reminder at each time.{nxt}")
         elif not jobs.can_autopost(a, s):
             self.next_label.setText(f"<span style='color:{theme.WARN}'>● On, but {_esc(a.label)} isn't logged in.</span> "
                                     "Log in on the Account page so autopilot can post.")
@@ -351,7 +362,7 @@ class QueuePage(QWidget):
         else:
             nxt = q[0]
             method = "your browser login" if s.upload_method == "browser" else "the TikTok API"
-            self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.name)}</b> "
+            self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.headline)}</b> "
                                     f"at {schedule.fmt_when(nxt.planned_at)} via {method}.")
 
     def selected_ids(self) -> list[str]:
@@ -465,7 +476,7 @@ class QueuePage(QWidget):
         ids = self.selected_ids()
         if not ids:
             return
-        names = "\n".join(f"• {self.state.store.get(i).name}" for i in ids[:8])
+        names = "\n".join(f"• {self.state.store.get(i).headline}" for i in ids[:8])
         to = self.state.active.handle
         if QMessageBox.question(self, "Post now", f"Post {len(ids)} video(s) to {to} now?\n\n{names}") != QMessageBox.Yes:
             return
@@ -481,8 +492,8 @@ class QueuePage(QWidget):
         self.state.save_accounts()
         self.refresh()
 
-    def _autopilot_toggled(self, on: bool) -> None:
-        self.state.set_autopilot(self.state.active.id, on)
+    def _mode_picked(self, mode: str) -> None:
+        self.state.set_autopilot(self.state.active.id, mode == "autopilot")
 
     def _menu(self, pos) -> None:
         ids = self.selected_ids()

@@ -7,13 +7,17 @@ Install it with **TikTokManager-Setup.exe** from the [latest release](https://gi
 (per user, no admin needed). `TikTokManager-windows.zip` from the same release is the portable version:
 unzip it anywhere and keep the `TikTokManager` folder together. Either way it updates itself.
 
+On first start a short **setup** walks through the three things that matter: your TikTok account
+(and logging in), where your clips come from (ClipMonster's folder is found by itself), and how you
+want to post. Skip it if you like; **Settings → Ready to upload → Run first-run setup again** brings it back.
+
 ## Accounts
 
 Run several TikTok accounts from one install. The **account button** at the top left shows which
 account the window is on; click it (or press **Ctrl+1…9**) to switch, or to add one.
 
 - Each account has its **own TikTok login** (its own browser profile, or its own API connection),
-  its **own queue and schedule**, its own **autopilot switch**, its own **stats and post history**, and
+  its **own queue and schedule**, its own **posting mode** (by hand or autopilot), its own **stats and post history**, and
   its own posting defaults: who can watch, hashtags added to every post, and the niche the AI writes
   captions for (**Manage accounts**).
 - The **video library is shared**. "Queue for …" adds the selected videos to the account you're on;
@@ -44,16 +48,30 @@ when TikTok Manager has none of its own.
 **Queue**: the order the shown account's videos will post in. Drag to reorder, or use **Sort by score** / **Smart order**
 (best first, never two clips from the same source video back to back). Set posts per day, the
 posting window and the minimum gap; each video shows when it will go out. Pin a video to an exact
-time if you want. **Post selected now** posts immediately; **Autopilot** posts each video when its
-time comes.
+time if you want. **Posting: ✋ By hand / 🤖 Autopilot** picks how the account posts. By hand, the
+times are reminders and you post from the Ready page (or your phone). On autopilot the app posts each
+video itself when its time comes. **Post selected now** posts immediately either way. The app opens on
+the Ready page for an account you post to by hand, and on the Queue for one on autopilot.
 
-**Ready**: for posting by hand. The shown account's queued videos, in order, each with its caption,
-credit line and hashtags ready to copy. **Copy caption**, drag the file in from **Show file** (or
-**Open TikTok upload**), post it in TikTok, then click **Mark as posted** (there's an **Undo** for a
-few seconds). **✨ Hashtags** has Claude write a video's hashtags (**✨ Hashtags for N** does
-every waiting video without any). **Not this one** sends a video back to the Library, **Edit…** opens it on the Queue
-page, and **Copy to a folder** copies the videos with a `.txt` caption beside each, for posting from
-a phone through a synced folder.
+**Ready**: for posting by hand. The shown account's queued videos, in order, each named by
+ClipMonster's hook (not its file name) with its caption, credit line and hashtags ready to copy.
+**Copy caption**, drag the file in from **Show file** (or **Open TikTok upload**), post it in TikTok,
+then click **Mark as posted** (there's an **Undo** for a few seconds). The top line counts what's
+waiting and what you've posted today. **✨ Hashtags** has Claude write a video's hashtags
+(**✨ Hashtags for N** does every waiting video without any). **Not this one** sends a video back to
+the Library, and **Edit…** opens it on the Queue page. Without a phone folder, **Copy to a folder**
+copies the videos with a `.txt` caption beside each.
+
+Everything on the Ready page works from the keyboard. The outlined card is the one the keys act on:
+
+| Key | Does |
+|---|---|
+| ↓ / J, ↑ / K | next / previous video |
+| C, H | copy the caption / just the hashtags |
+| F, P | show the file (to drag into TikTok) / play it |
+| T, E | ✨ hashtags / edit on the Queue page |
+| Enter | mark as posted (the next video takes over) |
+| Ctrl+Z | undo the last "mark as posted" |
 
 **Account**: log the shown account in, then see followers, likes, every video's views, likes, comments, shares and
 engagement, plus the change since the last refresh. "Posted from this app" is the history of
@@ -74,7 +92,7 @@ waiting), or all queued for one account.
   on the Ready page, and **Creative Commons** clips get a credit line (`🎥 Channel on YouTube (CC BY)`)
   in their caption, which the licence requires. Tick **Write an AI caption** to have Claude write
   one for each new clip instead.
-- With autopilot off, a **reminder** pops up when a video's posting time comes round, and a
+- For accounts you post to by hand, a **reminder** pops up when a video's posting time comes round, and a
   **morning summary** says what's ready for each account.
 - **ClipMonster learns from your results.** After each stats refresh, the views of ClipMonster clips
   that are two days old or more, compared with your account's usual views, go to ClipMonster's
@@ -82,6 +100,21 @@ waiting), or all queued for one account.
   hooks that worked. The Account page lists the best and worst source channels and the best hook so
   far. Untick **Tell ClipMonster how its clips do** in Settings → Ready to upload to stop it. Nothing
   leaves your PC.
+
+## Posting from your phone
+
+**Settings → Ready to upload → Phone folder** (or the 📱 line on the Ready page, one click with
+OneDrive) keeps the next day's clips for the accounts you post to by hand in a folder that syncs to
+your phone, **OneDrive › TikTok Ready** by default. Each video sits in posting order with a `.txt`
+holding exactly what to paste into TikTok, e.g. `01 Tue 15.00 - He quit his job live on air.mp4`.
+With more than one account, each gets its own subfolder.
+
+- It's kept up to date by itself: posted clips are taken out, reordering renames files rather than
+  copying them again, and the next clips go in as their day comes.
+- On your phone, open the folder in the OneDrive app, save the clip, paste its caption into TikTok,
+  post, then delete the clip there. A clip you delete isn't copied back: its card on the Ready page
+  asks whether you posted it (**Mark as posted**) or want it back in the folder.
+- Only files the app put there are touched. Accounts on autopilot are left out (they post themselves).
 
 ## How the score works
 
@@ -113,8 +146,8 @@ people should use the browser method.
 
 ## Autopilot
 
-Autopilot posts while the app is running, for each account where it's switched on (on the Queue page,
-or from the tray icon's **Autopilot** menu). Closing the window keeps it running in the system tray.
+Autopilot posts while the app is running, for each account set to **🤖 Autopilot** (on the Queue page,
+in **Manage accounts → Posting**, or from the tray icon's **Autopilot** menu). Closing the window keeps it running in the system tray.
 Turn on **Settings → Start with Windows** so it carries on after a restart. Only one copy of the app
 can run at a time, so nothing gets posted twice.
 
