@@ -7,11 +7,11 @@ from dataclasses import fields
 from typing import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSlider, QSpinBox,
+                               QTabWidget, QVBoxLayout, QWidget)
 
-from .. import updater
+from .. import clipmonster, ready, updater
 from ..config import VERSION, Settings, Weights
 from ..scoring import PART_LABELS
 from .widgets import label
@@ -41,13 +41,15 @@ def _form(tab: QTabWidget, title: str, intro: str = "") -> QFormLayout:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, parent=None, on_check_updates: Callable[[], None] | None = None):
+    def __init__(self, settings: Settings, parent=None, on_check_updates: Callable[[], None] | None = None,
+                 accounts: list[tuple[str, str]] | None = None, tab: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(620, 560)
         self.s = settings
         root = QVBoxLayout(self)
         tabs = QTabWidget()
+        self.tabs = tabs
         root.addWidget(tabs, 1)
 
         # Scoring
@@ -114,6 +116,9 @@ class SettingsDialog(QDialog):
         self.startup = QCheckBox("Start with Windows (in the tray) so autopilot keeps posting after a restart")
         self.startup.setChecked(settings.start_with_windows)
         f.addRow("", self.startup)
+
+        # Ready to upload
+        self._build_ready_tab(tabs, settings, accounts or [])
 
         # AI
         f = _form(tabs, "AI", "Optional. Claude watches frames from each clip, predicts how it will do on "
@@ -189,6 +194,79 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == tab:
+                tabs.setCurrentIndex(i)
+
+    def _build_ready_tab(self, tabs: QTabWidget, settings: Settings, accounts: list[tuple[str, str]]) -> None:
+        f = _form(tabs, "Ready to upload", "For posting by hand. Watched folders are checked every few minutes; "
+                                           "new clips are scored and land on the Ready page with their caption "
+                                           "ready to copy. ClipMonster's rejected clips are left out, and so is "
+                                           "anything you remove from the Library.")
+        self.watch_list = QListWidget()
+        self.watch_list.setFixedHeight(96)
+        self.watch_list.addItems([w for w in settings.watch_folders if w])
+        add = QPushButton("Add folder…")
+        add.clicked.connect(self._add_watch_folder)
+        cm = clipmonster.output_folders()[0]
+        add_cm = QPushButton("Add ClipMonster's Automation folder")
+        add_cm.setToolTip(str(cm))
+        add_cm.clicked.connect(lambda: self._add_watch(str(cm)))
+        remove = QPushButton("Remove")
+        remove.clicked.connect(lambda: [self.watch_list.takeItem(self.watch_list.row(i))
+                                        for i in self.watch_list.selectedItems()])
+        col = QVBoxLayout()
+        col.addWidget(self.watch_list)
+        row = QHBoxLayout()
+        for b in (add, add_cm, remove):
+            row.addWidget(b)
+        row.addStretch(1)
+        col.addLayout(row)
+        f.addRow("Watched folders", col)
+        options = [("library", "Leave them in the Library"), ("spread", "Share them out between my accounts")]
+        options += [(aid, f"Queue them for {name}") for aid, name in accounts]
+        self.watch_target = _combo(options, settings.watch_target)
+        f.addRow("New clips", self.watch_target)
+        self.watch_ai = QCheckBox("Write an AI caption for each new clip")
+        self.watch_ai.setToolTip("One Claude call per clip, with the key on the AI tab. ClipMonster's hook is used "
+                                 "as the caption otherwise")
+        self.watch_ai.setChecked(settings.watch_ai)
+        f.addRow("", self.watch_ai)
+        self.remind = QCheckBox("Remind me when it's time to post a video (accounts without autopilot)")
+        self.remind.setChecked(settings.remind_to_post)
+        f.addRow("", self.remind)
+        self.morning = QCheckBox("Each morning, tell me what's ready for each account")
+        self.morning.setChecked(settings.morning_summary)
+        f.addRow("", self.morning)
+        self.share = QCheckBox("Tell ClipMonster how its clips do, so it picks and writes hooks like the hits")
+        self.share.setToolTip("After each stats refresh, views of clips that are 2+ days old go to "
+                              "ClipMonster's results.json. Nothing leaves this PC")
+        self.share.setChecked(settings.share_results)
+        f.addRow("", self.share)
+        self.ready_folder = QLineEdit(settings.ready_folder)
+        self.ready_folder.setPlaceholderText(str(ready.default_ready_folder()))
+        browse = QPushButton("…")
+        browse.setFixedWidth(34)
+        browse.clicked.connect(self._pick_ready_folder)
+        row = QHBoxLayout()
+        row.addWidget(self.ready_folder, 1)
+        row.addWidget(browse)
+        f.addRow("“Copy to a folder” goes to", row)
+
+    def _add_watch(self, path: str) -> None:
+        existing = {self.watch_list.item(i).text() for i in range(self.watch_list.count())}
+        if path and path not in existing:
+            self.watch_list.addItem(path)
+
+    def _add_watch_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Watch a folder for new clips")
+        if folder:
+            self._add_watch(folder)
+
+    def _pick_ready_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Copy ready videos to", self.ready_folder.text())
+        if folder:
+            self.ready_folder.setText(folder)
 
     def apply(self) -> None:
         s = self.s
@@ -214,6 +292,13 @@ class SettingsDialog(QDialog):
         s.api_client_secret = self.client_secret.text().strip()
         s.api_redirect_port = self.port.value()
         s.api_post_mode = self.post_mode.currentData()
+        s.watch_folders = [self.watch_list.item(i).text() for i in range(self.watch_list.count())]
+        s.watch_target = self.watch_target.currentData()
+        s.watch_ai = self.watch_ai.isChecked()
+        s.remind_to_post = self.remind.isChecked()
+        s.morning_summary = self.morning.isChecked()
+        s.share_results = self.share.isChecked()
+        s.ready_folder = self.ready_folder.text().strip()
         self._apply_update_fields()
 
     def _apply_update_fields(self) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 import statistics
 import time
 import webbrowser
@@ -12,6 +13,7 @@ from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
                                QPushButton, QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
+from .. import results
 from ..store import VideoItem
 from . import theme
 from .library import SortItem
@@ -225,9 +227,11 @@ class AccountPage(QWidget):
         st, aid = self.state.store, self.state.active.id
         pairs = [(i.total, st.video_for(i).views) for i in st.items.values()
                  if i.account == aid and i.total is not None and st.video_for(i) and time.time() - (i.posted_at or 0) > 86400]
+        learned = "".join(f"<br>🎬 {html.escape(line)}" for line in
+                          results.insights([o for o in results.outcomes(st) if o.account == aid]))
         if len(pairs) < 4:
             return ("<span style='color:%s'>Post a few videos from the queue and refresh stats: this page will show "
-                    "whether high-scoring clips really get more views on your account.</span>" % theme.MUTED)
+                    "whether high-scoring clips really get more views on your account.</span>" % theme.MUTED) + learned
         pairs.sort()
         half = len(pairs) // 2
         low = statistics.median(v for _, v in pairs[:half])
@@ -239,7 +243,7 @@ class AccountPage(QWidget):
                    f"the score weights in Settings, e.g. more weight on the AI rating or the clip finder.")
         else:
             msg = f"Score and views aren't strongly linked yet ({len(pairs)} posts). Keep posting to build more data."
-        return f"📈 {msg}"
+        return f"📈 {msg}{learned}"
 
     def _update_buttons(self) -> None:
         busy = self.state.account_busy(self.state.active.id, ("account", "login"))
