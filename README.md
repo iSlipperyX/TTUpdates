@@ -38,10 +38,34 @@ posting window and the minimum gap; each video shows when it will go out. Pin a 
 time if you want. **Post selected now** posts immediately; **Autopilot** posts each video when its
 time comes.
 
+**Ready**: for posting by hand. The shown account's queued videos, in order, each with its caption,
+credit line and hashtags ready to copy. **Copy caption**, drag the file in from **Show file** (or
+**Open TikTok upload**), post it in TikTok, then click **Mark as posted** (there's an **Undo** for a
+few seconds). **Not this one** sends a video back to the Library, **Edit…** opens it on the Queue
+page, and **Copy to a folder** copies the videos with a `.txt` caption beside each, for posting from
+a phone through a synced folder.
+
 **Account**: log the shown account in, then see followers, likes, every video's views, likes, comments, shares and
 engagement, plus the change since the last refresh. "Posted from this app" is the history of
 everything the app posted or tried to post. Once a few posts have stats, the page tells you whether
 high-scoring videos really do get more views on *your* account.
+
+## Clips that arrive by themselves
+
+**Settings → Ready to upload** watches folders for new clips: add **ClipMonster's Automation folder**
+with one click. Every few minutes new clips are brought in, scored and (if you choose) queued:
+left in the Library, shared out between your accounts (each goes to the one with the fewest
+waiting), or all queued for one account.
+
+- Only finished clips come in: ones ClipMonster has listed in its `clips.json`, or other files nobody
+  has written to for a minute. Clips ClipMonster's quality check rejected (its `_rejected` folders)
+  are left out, and a video you remove from the Library isn't brought back.
+- ClipMonster's **hook** becomes the starting caption, its AI rating and quality-check warnings show
+  on the Ready page, and **Creative Commons** clips get a credit line (`🎥 Channel on YouTube (CC BY)`)
+  in their caption, which the licence requires. Tick **Write an AI caption** to have Claude write
+  one for each new clip instead.
+- With autopilot off, a **reminder** pops up when a video's posting time comes round, and a
+  **morning summary** says what's ready for each account.
 
 ## How the score works
 

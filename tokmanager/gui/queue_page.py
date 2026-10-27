@@ -357,6 +357,17 @@ class QueuePage(QWidget):
     def selected_ids(self) -> list[str]:
         return [li.data(ID_ROLE) for li in sorted(self.list.selectedItems(), key=self.list.row)]
 
+    def select_item(self, item_id: str) -> None:
+        """Select one video (e.g. "Edit…" on the Ready page) and scroll to it."""
+        self.refresh()
+        self.list.clearSelection()
+        for r in range(self.list.count()):
+            li = self.list.item(r)
+            if li.data(ID_ROLE) == item_id:
+                li.setSelected(True)
+                self.list.scrollToItem(li)
+                break
+
     def _order(self) -> list[str]:
         return [self.list.item(r).data(ID_ROLE) for r in range(self.list.count())]
 

@@ -30,6 +30,8 @@ def normalize_hashtags(text: str) -> str:
 
 def compose_caption(item: VideoItem, s: Settings) -> str:
     caption = (item.caption or item.name).strip()
+    if item.credit and item.credit not in caption:
+        caption = f"{caption}\n{item.credit}"  # Creative Commons clips must say whose they are
     tags = normalize_hashtags(f"{item.hashtags} {s.default_hashtags}")
     # Don't repeat tags already written into the caption itself.
     present = {t.lower() for t in re.findall(r"#\w+", caption)}
