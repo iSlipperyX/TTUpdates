@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -11,11 +10,16 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
+from . import safefile
 from .config import app_dir
 from .media import VIDEO_EXTS
 
 # Item status lifecycle: new -> queued -> uploading -> posted | failed
 STATUSES = ("new", "queued", "uploading", "posted", "failed")
+# last_error of a video whose upload was cut off by the app closing. It may be on TikTok already,
+# so it is never retried by itself; the next stats refresh marks it posted if it finds it there.
+INTERRUPTED = ("The app closed while this was uploading, so it may have been posted. "
+               "Check TikTok, and only retry it if it isn't there.")
 
 
 @dataclass
@@ -58,6 +62,7 @@ class VideoItem:
     # Result
     attempts: int = 0
     last_error: str = ""
+    upload_started_at: float | None = None  # when the last upload attempt began
     posted_at: float | None = None
     tiktok_id: str = ""
     tiktok_url: str = ""
@@ -155,9 +160,8 @@ class Store:
     # --- persistence ------------------------------------------------------------
 
     def load(self) -> None:
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        data = safefile.load(self.path, "your video library")
+        if not isinstance(data, dict):
             return
         with self.lock:
             self.items = {d["id"]: _build(VideoItem, d) for d in data.get("items", []) if d.get("id")}
@@ -168,10 +172,11 @@ class Store:
             elif data.get("profile") or data.get("tiktok_videos"):
                 # Version 1 had one account; its stats wait under "" until adopt() gives them an owner.
                 self.stats = {"": AccountStats.from_json(data)}
-            # A crash mid-upload leaves items stuck; put them back in the queue.
+            # A crash mid-upload leaves items stuck. The upload may have gone through, so don't queue
+            # them again (autopilot would post twice): mark them failed and let link_posts() look.
             for it in self.items.values():
                 if it.status == "uploading":
-                    it.status = "queued" if it.queue_pos is not None else "failed"
+                    it.status, it.last_error = "failed", INTERRUPTED
 
     def save(self) -> None:
         with self.lock:
@@ -181,9 +186,7 @@ class Store:
                 "accounts": {aid: st.to_json() for aid, st in self.stats.items()},
                 "ignored": sorted(self.ignored),
             }
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
+            safefile.save(self.path, data, indent=1)
 
     def adopt(self, account_ids: list[str], fallback: str) -> bool:
         """Give every queue entry, post and set of stats an account that exists.
@@ -440,15 +443,25 @@ class Store:
             videos = self.videos(account)
             taken = {i.tiktok_id for i in mine if i.tiktok_id}
             for it in mine:
-                if it.status != "posted" or it.tiktok_id:
+                interrupted = it.status == "failed" and it.last_error == INTERRUPTED
+                if (it.status != "posted" and not interrupted) or it.tiktok_id:
                     continue
-                want = _norm(it.caption)[:60]
+                # An empty caption posts as the video's name (tiktok.compose_caption).
+                want = _norm(it.caption or (it.name if interrupted else ""))[:60]
+                when = it.upload_started_at if interrupted else it.posted_at
+                if interrupted and not (want and when):
+                    continue
                 best = None
                 for v in videos.values():
                     if v.id in taken:
                         continue
-                    close_in_time = it.posted_at and abs(v.create_time - it.posted_at) < 6 * 3600
+                    close_in_time = when and abs(v.create_time - when) < 6 * 3600
                     same_text = want and _norm(v.description).startswith(want[:40])
+                    if interrupted:  # only the same caption, close in time, proves that it went up
+                        if same_text and close_in_time and v.create_time >= when - 600:
+                            best = v
+                            break
+                        continue
                     if same_text and (close_in_time or not v.create_time):
                         best = v
                         break
@@ -457,6 +470,10 @@ class Store:
                 if best:
                     it.tiktok_id, it.tiktok_url = best.id, best.url
                     taken.add(best.id)
+                    if interrupted:
+                        it.status, it.last_error, it.posted_at = "posted", "", best.create_time or when
+                        it.queue_pos = it.pinned_at = it.planned_at = None
+                        self._renumber()
 
     def video_for(self, item: VideoItem) -> TikTokVideo | None:
         if not item.tiktok_id or item.account not in self.stats:

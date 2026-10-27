@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import jobs, ready, updater
+from .. import jobs, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -212,6 +212,18 @@ class MainWindow(QMainWindow):
             self.hide()
         else:
             self.show()
+        if safefile.notices:
+            QTimer.singleShot(600, self._show_recovered)
+
+    def _show_recovered(self) -> None:
+        """A saved file was damaged and came back from a backup (or couldn't): say so once."""
+        lines, safefile.notices[:] = list(safefile.notices), []
+        for line in lines:
+            self._log("⚠ " + line)
+        if self.isVisible():
+            QMessageBox.warning(self, "A saved file was damaged", "\n\n".join(lines))
+        elif self.tray:
+            self.tray.showMessage("A saved file was damaged", lines[0], QSystemTrayIcon.Warning, 15000)
 
     # --- log / jobs -------------------------------------------------------------------
 

@@ -101,6 +101,7 @@ def post_item(store: Store, item_id: str, s: Settings, account: Account, log: Lo
         item.status = "uploading"
         item.attempts += 1
         item.last_error = ""
+        item.upload_started_at = time.time()
     store.save()
     try:
         result = tiktok.post(item, account.apply(s), account, log, cancelled, progress)

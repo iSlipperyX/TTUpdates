@@ -7,7 +7,7 @@ import pytest
 
 from tokmanager import schedule
 from tokmanager.config import Settings
-from tokmanager.store import Store, TikTokVideo, VideoItem
+from tokmanager.store import INTERRUPTED, Store, TikTokVideo, VideoItem
 from tokmanager.tiktok import compose_caption, normalize_hashtags
 from tokmanager.tiktok.api import MB, _chunking, _new_pkce
 from tokmanager.tiktok.browser import _short_number
@@ -159,13 +159,44 @@ def test_posted_items_link_to_account_videos(tmp_path):
     assert it.tiktok_id == "2"
 
 
-def test_crash_mid_upload_requeues(tmp_path):
+def test_crash_mid_upload_is_not_queued_again(tmp_path):
+    # The upload may have gone through, so autopilot must not post it a second time.
     st = Store(tmp_path / "lib.json")
-    it = item("x", queue_pos=0)
+    it = item("x", queue_pos=0, account="acct")
     it.status = "uploading"
     st.items[it.id] = it
     st.save()
-    assert Store(tmp_path / "lib.json").get(it.id).status == "queued"
+    again = Store(tmp_path / "lib.json").get(it.id)
+    assert (again.status, again.last_error, again.queue_pos) == ("failed", INTERRUPTED, 0)
+    assert schedule.due([again], now=ts(2030, 1, 1, 12)) is None
+
+
+def test_interrupted_upload_found_on_tiktok_becomes_posted(tmp_path):
+    st = Store(tmp_path / "lib.json")
+    it = item("x", caption="This changed everything", queue_pos=0, account="acct",
+               upload_started_at=ts(2026, 10, 20, 12))
+    it.status, it.last_error = "failed", INTERRUPTED
+    other = item("y", queue_pos=1, account="acct")
+    st.items.update({it.id: it, other.id: other})
+    st.update_tiktok_videos("acct", [
+        TikTokVideo(id="1", description="This changed everything", create_time=ts(2026, 10, 19, 12)),  # older post
+        TikTokVideo(id="2", description="This changed everything #fyp", create_time=ts(2026, 10, 20, 12, 3)),
+    ])
+    assert (it.status, it.tiktok_id, it.last_error, it.queue_pos) == ("posted", "2", "", None)
+    assert it.posted_at == ts(2026, 10, 20, 12, 3) and other.queue_pos == 0
+
+
+def test_interrupted_upload_not_on_tiktok_stays_failed(tmp_path):
+    st = Store(tmp_path / "lib.json")
+    it = item("x", caption="This changed everything", queue_pos=0, account="acct",
+               upload_started_at=ts(2026, 10, 20, 12))
+    it.status, it.last_error = "failed", INTERRUPTED
+    st.items[it.id] = it
+    st.update_tiktok_videos("acct", [
+        TikTokVideo(id="1", description="Something else", create_time=ts(2026, 10, 20, 12, 3)),
+        TikTokVideo(id="2", description="This changed everything", create_time=ts(2026, 10, 18, 12)),
+    ])
+    assert (it.status, it.tiktok_id) == ("failed", "")
 
 
 # --- scoring end to end ------------------------------------------------------------

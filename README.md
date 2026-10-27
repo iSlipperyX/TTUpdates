@@ -119,6 +119,13 @@ can run at a time, so nothing gets posted twice.
   encrypted with your Windows login, one tokens file per account under `tokens\`) and
   `%LOCALAPPDATA%\TikTokManager` (thumbnails, logs, and each account's browser profile with its TikTok
   login under `browser-profiles\`; an account carried over from 1.0 keeps using `browser-profile`).
+- Every save keeps the previous file as `.bak`, plus a daily copy in `backups\` (the last 7 days). If
+  the library, settings or account list is ever damaged, the app loads the newest good copy, keeps the
+  damaged file beside it, and tells you.
+- If the app closes in the middle of an upload, that video is marked failed rather than queued again,
+  because it may already be on TikTok. The next stats refresh marks it posted if it finds it there.
+- Unexpected errors are shown, and their details saved in `crashes\`. **Settings → Updates → Copy
+  diagnostics** copies the version, setup, recent log and latest error (no keys or logins) for a bug report.
 - `TikTokManager.exe --selftest` checks ffmpeg and the browser automation and writes `selftest.txt`.
 
 ## Developing
