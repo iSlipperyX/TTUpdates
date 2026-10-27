@@ -24,11 +24,12 @@ from .account import AccountPage
 from .accounts_dialog import AccountsDialog, account_status
 from .library import LibraryPage
 from .login_dialog import LoginDialog
+from .profile_dialog import ProfileDialog
 from .queue_page import QueuePage
 from .ready_page import ReadyPage
 from .settings_dialog import SettingsDialog
 from .state import AppState, Job
-from .widgets import account_badge
+from .widgets import badge_for
 
 AUTOPILOT_CHECK_MS = 30_000
 WATCH_CHECK_MS = 3 * 60_000
@@ -174,6 +175,7 @@ class MainWindow(QMainWindow):
         self.account.check_requested.connect(lambda: self.check_posting(self.state.active, full=True))
         self.account.requeue_requested.connect(self.requeue)
         self.account.manage_requested.connect(self.manage_accounts)
+        self.account.profile_requested.connect(self.edit_profile)
         state.account_switched.connect(self._account_switched)
         state.account_changed.connect(self._update_account_button)
         state.library_changed.connect(self._update_account_button)
@@ -543,6 +545,55 @@ class MainWindow(QMainWindow):
         job.account_id = account.id
         st.run(job, pool="tiktok", on_success=done, on_failure=failed, quiet=auto)
 
+    def edit_profile(self, account_id: str = "", parent: QWidget | None = None) -> None:
+        a = self.state.accounts.get(account_id or self.state.active.id)
+        if a is None:
+            return
+        dlg = ProfileDialog(self.state, a, parent or self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.apply_requested.connect(self.apply_profile)
+        dlg.exec()
+
+    def apply_profile(self, account_id: str) -> None:
+        """Put the account's photo, name and bio on TikTok (in its browser, whichever posting method is set)."""
+        from .. import profile
+
+        st = self.state
+        a = st.accounts.get(account_id)
+        if a is None:
+            return
+        if st.account_busy(a.id):
+            QMessageBox.information(self, "Profile", f"Wait for {a.label}'s current TikTok job to finish, then "
+                                    "press Apply again.")
+            return
+        applying = profile.fingerprint(a)
+
+        def work(j: Job) -> list[str]:
+            from .. import tiktok
+
+            return tiktok.apply_profile(a.apply(st.settings), a, j.log, j.cancelled)
+
+        def done(changed: list[str]) -> None:
+            if profile.fingerprint(a) == applying:  # not edited again meanwhile
+                profile.mark_applied(a)
+            st.save_accounts()
+            st.account_changed.emit()
+            what = ", ".join(changed) if changed else "nothing needed changing"
+            self._log(f"✓ Profile for {a.handle} is on TikTok ({what}).")
+            QMessageBox.information(self, "Profile", f"{a.handle}'s profile is set on TikTok ({what}).")
+
+        def failed(msg: str) -> None:
+            if msg == "Cancelled":
+                return
+            a.profile_error = msg
+            st.save_accounts()
+            st.account_changed.emit()
+            QMessageBox.warning(self, "Profile", f"{a.handle}'s profile couldn't be set on TikTok.\n\n{msg}")
+
+        job = Job(f"Setting {a.label}'s TikTok profile", work, kind="profile")
+        job.account_id = a.id
+        st.run(job, pool="tiktok", on_success=done, on_failure=failed)
+
     def requeue(self, item_id: str) -> None:
         st = self.state
         it = st.store.get(item_id)
@@ -565,7 +616,7 @@ class MainWindow(QMainWindow):
     def _update_account_button(self) -> None:
         st = self.state
         a = st.active
-        self.account_btn.setIcon(QIcon(account_badge(a.id, a.label, 22)))
+        self.account_btn.setIcon(QIcon(badge_for(a, 22)))
         self.account_btn.setText(f" {a.label}  ")
         self.account_btn.setToolTip(f"{a.label}: {account_status(st, a)}\nClick to switch accounts (Ctrl+1…9).")
         self.setWindowTitle(f"{a.label} · {APP_NAME}" if len(st.accounts) > 1 else APP_NAME)
@@ -577,7 +628,7 @@ class MainWindow(QMainWindow):
         group = QActionGroup(m)
         for n, a in enumerate(st.accounts, 1):
             text = f"{a.label}   ·   {account_status(st, a)}" + (f"\tCtrl+{n}" if n <= 9 else "")
-            act = QAction(QIcon(account_badge(a.id, a.label, 22)), text, m)
+            act = QAction(QIcon(badge_for(a, 22)), text, m)
             act.setCheckable(True)
             act.setChecked(a.id == st.active.id)
             act.triggered.connect(lambda _=False, i=a.id: st.switch_account(i))
@@ -619,6 +670,7 @@ class MainWindow(QMainWindow):
         dlg = AccountsDialog(self.state, self, select=select if isinstance(select, str) else "")
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.add_requested.connect(lambda: (dlg.reload(a.id) if (a := self.add_account()) else None))
+        dlg.profile_requested.connect(lambda account_id: self.edit_profile(account_id, dlg))
         dlg.exec()
 
     # --- settings -------------------------------------------------------------------
@@ -667,7 +719,7 @@ class MainWindow(QMainWindow):
         m = self.tray_autopilot
         m.clear()
         for a in st.accounts:
-            act = QAction(QIcon(account_badge(a.id, a.label, 18)), a.label, m, checkable=True)
+            act = QAction(QIcon(badge_for(a, 18)), a.label, m, checkable=True)
             act.setChecked(a.autopilot)
             act.toggled.connect(lambda on, i=a.id: st.set_autopilot(i, on))
             m.addAction(act)

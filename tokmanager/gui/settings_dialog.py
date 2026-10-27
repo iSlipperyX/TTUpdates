@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 from .. import clipmonster, diagnostics, ready, updater
 from ..config import VERSION, Settings, Weights, app_dir
 from ..scoring import PART_LABELS
+from . import theme
 from .widgets import label
 
 
@@ -175,15 +176,20 @@ class SettingsDialog(QDialog):
         self.auto_install = QCheckBox("Install updates by myself when the app is in the tray and no post is due soon")
         self.auto_install.setChecked(settings.auto_install_updates)
         f.addRow("", self.auto_install)
-        last = updater.load_state().get("last_check")
+        ustate = updater.load_state()
+        last, result = ustate.get("last_check"), ustate.get("result") or {}
         check_row = QHBoxLayout()
         check_btn = QPushButton("Check now")
         check_btn.setEnabled(on_check_updates is not None)
         if on_check_updates:
             check_btn.clicked.connect(lambda: (self._apply_update_fields(), on_check_updates()))
         check_row.addWidget(check_btn)
-        check_row.addWidget(label("Last checked " + (dt.datetime.fromtimestamp(last).strftime("%d %b %H:%M")
-                                                     if last else "never"), "muted"))
+        when = dt.datetime.fromtimestamp(result.get("at") or last).strftime("%d %b %H:%M") if (result or last) else ""
+        outcome = label(f"Last checked {when}: {result['text']}" if result.get("text") else
+                        f"Last checked {when}" if when else "Not checked yet", "muted", wrap=True)
+        if result.get("kind") == "error":
+            outcome.setStyleSheet(f"color:{theme.BAD};")
+        check_row.addWidget(outcome, 1)
         check_row.addStretch(1)
         f.addRow("", check_row)
         if settings.skipped_version:

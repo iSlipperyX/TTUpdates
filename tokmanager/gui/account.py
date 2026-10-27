@@ -18,7 +18,7 @@ from ..store import VideoItem
 from . import theme
 from .library import SortItem
 from .state import AppState
-from .widgets import StatCard, account_badge, fmt_num, label, panel
+from .widgets import StatCard, badge_for, fmt_num, label, panel
 
 URL_ROLE = Qt.UserRole + 2
 ID_ROLE = Qt.UserRole + 1
@@ -31,6 +31,7 @@ class AccountPage(QWidget):
     check_requested = Signal()  # test TikTok's upload page without posting
     requeue_requested = Signal(str)
     manage_requested = Signal(str)  # account id
+    profile_requested = Signal(str)  # account id
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -55,6 +56,8 @@ class AccountPage(QWidget):
         col.addWidget(self.how)
         self.check_status = label("", "muted")
         col.addWidget(self.check_status)
+        self.profile_status = label("", "muted")
+        col.addWidget(self.profile_status)
         cl.addLayout(col, 1)
         cl.addWidget(label("@"))
         self.username = QLineEdit()
@@ -74,10 +77,13 @@ class AccountPage(QWidget):
         self.check_btn.setToolTip("Walks TikTok Studio's upload page with a 3-second black test clip, up to just "
                                   "before Post, then throws the clip away. Nothing is posted.")
         self.check_btn.clicked.connect(self.check_requested.emit)
+        self.profile_btn = QPushButton("Profile…")
+        self.profile_btn.setToolTip("Profile picture, name and bio for this account, applied to TikTok for you")
+        self.profile_btn.clicked.connect(lambda: self.profile_requested.emit(self.state.active.id))
         self.manage_btn = QPushButton("Account settings…")
         self.manage_btn.setToolTip("Name, posting defaults and niche for this account; add or remove accounts")
         self.manage_btn.clicked.connect(lambda: self.manage_requested.emit(self.state.active.id))
-        for b in (self.login_btn, self.refresh_btn, self.check_btn, self.logout_btn, self.manage_btn):
+        for b in (self.login_btn, self.refresh_btn, self.check_btn, self.logout_btn, self.profile_btn, self.manage_btn):
             cl.addWidget(b)
         root.addWidget(conn)
 
@@ -137,7 +143,7 @@ class AccountPage(QWidget):
         p = st.profile(a.id)
         if not self.username.hasFocus():
             self.username.setText(a.username)
-        self.badge.setPixmap(account_badge(a.id, a.label, 34))
+        self.badge.setPixmap(badge_for(a, 34))
         if s.upload_method == "api":
             from ..tiktok.api import Tokens
 
@@ -158,6 +164,11 @@ class AccountPage(QWidget):
         self.check_status.setToolTip(a.upload_check_detail if tested else "")
         self.check_status.setVisible(bool(tested))
         self.check_status.setStyleSheet(f"color: {theme.BAD};" if tested and a.upload_check == "fail" else "")
+        from .. import profile
+
+        self.profile_status.setText(profile.status(a) if profile.is_set(a) else "")
+        self.profile_status.setVisible(profile.is_set(a))
+        self.profile_status.setStyleSheet(f"color: {theme.BAD};" if a.profile_error and profile.pending(a) else "")
         title, handle = a.name or p.nickname, f"@{a.username}" if a.username else ""
         name = f"{title} ({handle})" if title and handle else title or handle or "New account"
         if not connected:
@@ -320,7 +331,7 @@ class AccountPage(QWidget):
             if others:
                 also = m.addMenu("Also post to")
                 for a in others:
-                    also.addAction(QIcon(account_badge(a.id, a.label, 18)), a.label,
+                    also.addAction(QIcon(badge_for(a, 18)), a.label,
                                    lambda i=a.id: self._copy_to(item.id, i))
         m.exec(self.history.viewport().mapToGlobal(pos))
 

@@ -23,6 +23,7 @@ class FakeGitHub:
 
     def __init__(self):
         self.release: dict | None = None
+        self.older: list[dict] = []  # earlier releases, for the /releases list
         self.files: dict[str, bytes] = {}
         self.requests: list[tuple[str, dict]] = []
         fake = self
@@ -38,6 +39,9 @@ class FakeGitHub:
                     if self.headers.get("If-None-Match") == etag:
                         return self._send(304, b"")
                     return self._send(200, body, {"ETag": etag, "Content-Type": "application/json"})
+                if self.path.split("?")[0].endswith("/releases"):
+                    items = ([fake.release] if fake.release else []) + fake.older
+                    return self._send(200, json.dumps(items).encode(), {"Content-Type": "application/json"})
                 name = self.path.rsplit("/", 1)[-1]
                 if name in fake.files:
                     return self._send(200, fake.files[name], {"Content-Type": "application/octet-stream"})
@@ -109,7 +113,8 @@ def test_check_finds_newer_release_and_uses_etag(gh, tmp_path):
     assert rel and rel.version == "1.2.0" and rel.sha256 and rel.notes == "- New stuff"
     again = updater.check("iSlipperyX/TTUpdates", current="1.0.0")
     assert again == rel
-    assert gh.requests[-1][1].get("If-None-Match")  # second check was a free 304
+    latest = [h for path, h in gh.requests if path.endswith("/releases/latest")]
+    assert latest[-1].get("If-None-Match")  # second check was a free 304
     assert updater.check("iSlipperyX/TTUpdates", current="1.2.0") is None
 
 
@@ -208,3 +213,28 @@ def test_helper_gets_a_hidden_console_not_a_detached_process(tmp_path, monkeypat
     assert calls == [0x8000000 | 0x200 | 0x1000000, 0x8000000 | 0x200]
     assert not any(flags & 0x8 for flags in calls)
     assert 'try { Start-App @("--updated-from"' in (tmp_path / "apply-update.ps1").read_text(encoding="ascii")
+
+
+def test_notes_cover_every_version_since_yours(gh, tmp_path):
+    gh.publish("1.3.0", app_zip(tmp_path))
+    gh.older = [{"tag_name": f"v{v}", "body": f"- notes for {v}"} for v in ("1.2.1", "1.2.0", "1.1.0")]
+    gh.older.append({"tag_name": "v1.4.0-beta", "body": "- beta", "prerelease": True})
+    rel = updater.check("o/r", current="1.2.0")
+    assert rel.notes.index("# 1.3.0") < rel.notes.index("# 1.2.1")
+    assert "- notes for 1.2.1" in rel.notes
+    assert "notes for 1.2.0" not in rel.notes and "notes for 1.1.0" not in rel.notes and "beta" not in rel.notes
+    # Just one version behind: only that release's own notes.
+    assert updater.check("o/r", current="1.2.1").notes == "- New stuff"
+
+
+def test_the_last_check_result_is_kept_for_the_updates_tab(gh, tmp_path):
+    updater.check("o/r", current="1.0.0")
+    assert updater.load_state()["result"]["text"] == "No releases have been published yet."
+    gh.publish("1.2.0", app_zip(tmp_path))
+    updater.check("o/r", current="1.2.0")
+    assert updater.load_state()["result"] | {"at": 0} == {"at": 0, "kind": "ok", "text": "Up to date (1.2.0)."}
+    updater.check("o/r", current="1.0.0")
+    assert updater.load_state()["result"]["kind"] == "available"
+    with pytest.raises(updater.UpdateError):
+        updater.check("not a repo")
+    assert updater.load_state()["result"]["kind"] == "error"

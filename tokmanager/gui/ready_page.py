@@ -23,7 +23,7 @@ from ..scoring import grade
 from ..store import VideoItem
 from . import theme
 from .state import AppState
-from .widgets import Thumb, account_badge, fmt_dur, label
+from .widgets import Thumb, badge_for, fmt_dur, label
 
 MAX_CARDS = 60
 UNDO_SECONDS = 20
@@ -218,7 +218,7 @@ class ReadyPage(QWidget):
         items = ready.ready(st.store, a.id)
         multi = len(st.accounts) > 1
         self.badge.setVisible(multi)
-        self.badge.setPixmap(account_badge(a.id, a.label, 24))
+        self.badge.setPixmap(badge_for(a, 24))
         queued = [i for i in items if i.status == "queued"]
         self.summary.setText((f"{a.label}: " if multi else "") +
                              (f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued

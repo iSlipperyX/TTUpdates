@@ -123,8 +123,9 @@ def main() -> int:
     if ns.selftest:
         from ..diagnostics import run
 
-        print(run())
-        return 0
+        report = run()
+        print(report)
+        return 1 if "\nFAIL " in "\n" + report else 0
 
     from PySide6.QtCore import Qt
     from PySide6.QtNetwork import QLocalServer
@@ -166,6 +167,7 @@ def main() -> int:
         win.after_failed_update(ns.update_failed)
     # Old downloads and backups can be hundreds of MB; delete them off the GUI thread.
     threading.Thread(target=updater.cleanup, daemon=True).start()
+    updater.sync_installed_version()
     if ns.update:
         win.check_for_updates(unattended=True)
 

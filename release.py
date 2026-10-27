@@ -1,17 +1,20 @@
-"""Publish a new version of TikTok Manager to the update repository on GitHub.
+"""Release a new version of TikTok Manager.
 
-    python release.py 1.1.0                      (notes from release-notes/v1.1.0.md)
-    python release.py 1.1.0 --notes "Faster scoring, fixes a crash when ..."
-    python release.py 1.1.0 --notes-file notes.md
+    python release.py 1.3.0          (notes from release-notes/v1.3.0.md)
 
-It checks that this clone matches the repository's main branch on GitHub, sets VERSION in
-tokmanager/config.py, runs the tests, builds the app, then creates the GitHub release v1.1.0,
-tagged on the commit you built, with TikTokManager-windows.zip (+ its .sha256). Every installed
-copy picks the update up on its next check (at start-up and every 6 hours).
+It checks that this clone is clean and matches main on GitHub, sets VERSION in
+tokmanager/config.py, commits that, tags v1.3.0 and pushes both. GitHub Actions
+(.github/workflows/release.yml) then builds the app and its installer on Windows and
+publishes the release, usually within 15 minutes. Every installed copy picks the update
+up on its next check (at start-up and every 6 hours). Your git login does the pushing:
+no GitHub token is needed and nothing is built on your PC.
 
-Needs a GitHub token that can write to the repo, read from the GITHUB_TOKEN environment variable
-(or typed when asked). Create one at github.com/settings/personal-access-tokens: a fine-grained
-token for the update repo with "Contents: Read and write".
+If GitHub Actions is unavailable, the old way still works: build here and publish with a token.
+
+    python release.py 1.3.0 --local [--notes "..." | --notes-file notes.md]
+
+That needs a GitHub token that can write to the repo, read from the GITHUB_TOKEN environment
+variable (or typed when asked): a fine-grained token with "Contents: Read and write".
 """
 
 from __future__ import annotations
@@ -153,18 +156,92 @@ class GitHub:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("version", help="new version, e.g. 1.1.0")
+    ap.add_argument("version", help="new version, e.g. 1.3.0")
+    ap.add_argument("--local", action="store_true", help="build on this PC and publish with a token "
+                                                         "instead of letting GitHub Actions do it")
+    ap.add_argument("--no-push", action="store_true", help="commit and tag only; push yourself afterwards")
     notes = ap.add_mutually_exclusive_group()
-    notes.add_argument("--notes", default="", help="release notes (Markdown), shown in the app's 'What's new'")
-    notes.add_argument("--notes-file", type=Path, help="read the release notes from a file")
+    notes.add_argument("--notes", default="", help="(--local) release notes, shown in the app's 'What's new'")
+    notes.add_argument("--notes-file", type=Path, help="(--local) read the release notes from a file")
     ap.add_argument("--repo", default=default_repo(), help="owner/name of the update repository")
-    ap.add_argument("--skip-tests", action="store_true")
-    ap.add_argument("--skip-build", action="store_true", help="publish the existing dist/ build as-is")
+    ap.add_argument("--skip-tests", action="store_true", help="(--local)")
+    ap.add_argument("--skip-build", action="store_true", help="(--local) publish the existing dist/ build as-is")
     args = ap.parse_args()
 
     version = args.version.lstrip("vV")
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise SystemExit("Use a version like 1.2.0")
+    if not args.local:
+        return tag_release(version, args.repo, push=not args.no_push)
+    return publish_local(args, version)
+
+
+class GitError(SystemExit):
+    pass
+
+
+def must(*args: str) -> str:
+    """Run git; stop with its message if it fails."""
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise GitError(f"git {' '.join(args)} failed:\n{(r.stderr or r.stdout).strip()}")
+    return r.stdout.rstrip()
+
+
+def tag_release(version: str, repo: str, push: bool = True, branch: str = "main") -> int:
+    """Bump, commit and tag `version`, then push: GitHub Actions builds and publishes it."""
+    tag = f"v{version}"
+    head, changed = local_commit()
+    if head is None:
+        raise SystemExit("This folder isn't a git clone of the repository. Clone it, or use --local.")
+    if changed:
+        raise SystemExit("This clone has changes that aren't committed: " + ", ".join(changed[:5])
+                         + ("…" if len(changed) > 5 else "") + "\nCommit or undo them first.")
+    if git("rev-parse", "--abbrev-ref", "HEAD") != branch:
+        raise SystemExit(f"Switch to the {branch} branch first: git checkout {branch}")
+    if not default_notes(version):
+        raise SystemExit(f"release-notes/{tag}.md is missing. Write the notes (they're shown in the app's "
+                         "'What's new'), commit them, then try again.")
+    if parse(version) < parse(current_version()):
+        raise SystemExit(f"{version} is older than the code's current version {current_version()}.")
+    if git("rev-parse", "-q", "--verify", f"refs/tags/{tag}") is not None:
+        raise SystemExit(f"The tag {tag} already exists here. Pick a new version number.")
+    if push:
+        must("fetch", "-q", "origin", branch, "--tags")
+        if git("rev-parse", "-q", "--verify", f"refs/tags/{tag}") is not None:
+            raise SystemExit(f"The tag {tag} already exists on GitHub. Pick a new version number.")
+        remote = must("rev-parse", f"origin/{branch}")
+        if remote != head:
+            raise SystemExit(f"This clone isn't at the latest {branch} on GitHub ({remote[:7]}); you're on "
+                             f"{head[:7]}.\nRun 'git pull' (or 'git push' if the newer commit is yours), "
+                             "then try again.")
+
+    bumped = current_version() != version
+    if bumped:
+        set_version(version)
+        must("commit", "-q", "-m", f"Release {version}", "--", "tokmanager/config.py")
+        print(f"Version set to {version} and committed.")
+    must("tag", "-a", tag, "-m", f"TikTok Manager {version}")
+    print(f"Tagged {tag}.")
+    if not push:
+        print(f"\nPublish it with:\n    git push origin {branch}\n    git push origin {tag}")
+        return 0
+    try:
+        if bumped:
+            must("push", "-q", "origin", branch)
+        must("push", "-q", "origin", tag)
+    except GitError as exc:
+        print(exc.code)
+        print(f"\nNothing was published. Fix the problem above, then run:\n    git push origin {branch}\n"
+              f"    git push origin {tag}")
+        return 1
+    print(f"\nPushed. GitHub is now building TikTok Manager {version} and its installer; that takes about "
+          f"10-15 minutes.\nWatch it here: https://github.com/{repo}/actions\n"
+          "When it's done, the release appears on GitHub and installed copies offer the update on their next check.")
+    return 0
+
+
+def publish_local(args, version: str) -> int:
     tag = f"v{version}"
     notes_file = args.notes_file or (None if args.notes else default_notes(version))
     if notes_file:

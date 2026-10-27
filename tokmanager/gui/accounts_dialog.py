@@ -10,11 +10,11 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout)
 
-from .. import schedule
+from .. import profile, schedule
 from ..accounts import Account
 from ..tiktok import normalize_hashtags
 from .state import AppState
-from .widgets import account_badge, label, panel
+from .widgets import badge_for, label, panel
 
 ID_ROLE = Qt.UserRole + 1
 PRIVACY = [("public", "Everyone"), ("friends", "Friends"), ("private", "Only me")]
@@ -40,6 +40,7 @@ def account_status(state: AppState, a: Account) -> str:
 
 class AccountsDialog(QDialog):
     add_requested = Signal()  # the main window adds the account so it can offer to log in
+    profile_requested = Signal(str)  # account id: open its Profile… dialog
 
     def __init__(self, state: AppState, parent=None, select: str = ""):
         super().__init__(parent)
@@ -112,6 +113,14 @@ class AccountsDialog(QDialog):
         form.addRow("Always add hashtags", self.hashtags)
         form.addRow("Niche / audience", self.niche)
         form_lay.addLayout(form)
+        prow = QHBoxLayout()
+        self.profile_note = label("", "muted", wrap=True)
+        prow.addWidget(self.profile_note, 1)
+        self.profile_btn = QPushButton("Profile…")
+        self.profile_btn.setToolTip("Profile picture, name and bio for this account on TikTok")
+        self.profile_btn.clicked.connect(lambda: self.profile_requested.emit(self.selected_id()))
+        prow.addWidget(self.profile_btn)
+        form_lay.addLayout(prow)
         self.schedule_note = label("", "muted", wrap=True)
         form_lay.addWidget(self.schedule_note)
         form_lay.addStretch(1)
@@ -169,7 +178,7 @@ class AccountsDialog(QDialog):
                 continue
             shown = "   (shown now)" if a.id == self.state.active.id else ""
             li.setText(f"{a.label}{shown}\n{account_status(self.state, a)}")
-            li.setIcon(QIcon(account_badge(a.id, a.label, 28)))
+            li.setIcon(QIcon(badge_for(a, 28)))
         if not self._loading and self.selected_account():
             self.status.setText(account_status(self.state, self.selected_account()))
 
@@ -195,6 +204,7 @@ class AccountsDialog(QDialog):
         self.privacy.setCurrentIndex(max(0, self.privacy.findData(a.default_privacy)))
         self.hashtags.setText(a.default_hashtags)
         self.niche.setText(a.niche)
+        self.profile_note.setText(profile.status(a))
         s = a.apply(self.state.settings)
         slots = ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(s))
         self.schedule_note.setText(f"Schedule: {a.posts_per_day} a day at {slots}, at least {a.min_gap_minutes} min "

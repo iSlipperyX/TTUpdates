@@ -239,6 +239,41 @@ def account_colour(account_id: str) -> str:
     return ACCOUNT_COLOURS[sum(map(ord, account_id or "")) % len(ACCOUNT_COLOURS)]
 
 
+def badge_for(a, size: int = 22) -> QPixmap:
+    """The account's profile photo in a circle when it has one, else its coloured letter badge."""
+    from ..profile import photo_path
+
+    photo = photo_path(a)
+    if photo:
+        pm = round_photo(str(photo), size)
+        if not pm.isNull():
+            return pm
+    return account_badge(a.id, a.label, size)
+
+
+@lru_cache(maxsize=256)
+def round_photo(path: str, size: int) -> QPixmap:
+    """A square picture cut to a circle (the file name changes with every new photo, so caching is safe)."""
+    src = QPixmap(path)
+    if src.isNull():
+        return src
+    ratio = 2  # drawn at twice the size so it stays sharp on high-DPI screens
+    side = min(src.width(), src.height())
+    src = src.copy((src.width() - side) // 2, (src.height() - side) // 2, side, side).scaled(
+        size * ratio, size * ratio, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    pm = QPixmap(size * ratio, size * ratio)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    path_ = QPainterPath()
+    path_.addEllipse(QRectF(0, 0, size * ratio, size * ratio))
+    p.setClipPath(path_)
+    p.drawPixmap(0, 0, src)
+    p.end()
+    pm.setDevicePixelRatio(ratio)
+    return pm
+
+
 @lru_cache(maxsize=64)
 def account_badge(account_id: str, text: str, size: int = 22) -> QPixmap:
     """A coloured circle with the account's first letter."""

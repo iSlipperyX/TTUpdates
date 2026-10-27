@@ -91,3 +91,52 @@ def rate(item: VideoItem, s: Settings, log=None) -> dict:
     data["hook"] = max(1, min(100, int(data.get("hook", 50))))
     data["hashtags"] = [h.lstrip("#").strip() for h in data.get("hashtags", []) if h.strip()]
     return data
+
+
+BIO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "bios": {"type": "array", "items": {"type": "string"},
+                 "description": "Three different bios, each at most 80 characters"},
+    },
+    "required": ["bios"],
+    "additionalProperties": False,
+}
+
+
+def suggest_bios(s: Settings, niche: str, username: str = "", name: str = "", current: str = "",
+                 examples: list[str] | None = None) -> list[str]:
+    """Three short TikTok bios for an account, from its niche (and its best captions, if any)."""
+    import anthropic
+
+    from .profile import BIO_MAX
+
+    if not s.ai_api_key:
+        raise RuntimeError("Add your Anthropic API key in Settings → AI to get bio suggestions.")
+    if not (niche or examples or current):
+        raise RuntimeError("Fill in the account's niche / audience first, so the suggestions fit it.")
+    facts = []
+    if username:
+        facts.append(f"Account: @{username}" + (f" (shown as “{name}”)" if name else ""))
+    if niche:
+        facts.append(f"What it posts and for whom: {niche}")
+    if current:
+        facts.append(f"Current bio, for reference: {current}")
+    if examples:
+        facts.append("Captions of some of its posts:\n" + "\n".join(f"- {c}" for c in examples[:8]))
+    facts.append(f"Write three different bios, each at most {BIO_MAX} characters including emoji and spaces.")
+    client = anthropic.Anthropic(api_key=s.ai_api_key, max_retries=3)
+    response = client.messages.create(
+        model=s.ai_model,
+        max_tokens=2000,
+        system=("You write TikTok bios for clip accounts. A good bio says in a few words what the viewer gets "
+                "and why they should follow, in the account's own voice. At most one or two emoji, no hashtags, "
+                "no links, no claims the account can't back up, and nothing that sounds like spam."),
+        messages=[{"role": "user", "content": "\n".join(facts)}],
+        output_config={"format": {"type": "json_schema", "schema": BIO_SCHEMA}},
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError("Claude declined to write a bio for this account.")
+    text = next((b.text for b in response.content if b.type == "text"), "{}")
+    bios = [" ".join(b.split()) for b in json.loads(text).get("bios", []) if b.strip()]
+    return [b if len(b) <= BIO_MAX else b[:BIO_MAX - 1].rstrip() + "…" for b in bios][:3]

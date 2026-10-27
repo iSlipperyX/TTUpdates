@@ -63,6 +63,13 @@ class Account:
     upload_check_at: float = 0.0
     upload_check: str = ""
     upload_check_detail: str = ""
+    # The TikTok profile set up for this account (profile.py) and what was last applied to TikTok
+    profile_name: str = ""
+    profile_bio: str = ""
+    profile_photo: str = ""  # file name in profile-photos/
+    profile_applied: str = ""  # profile.fingerprint() of what was applied
+    profile_applied_at: float = 0.0
+    profile_error: str = ""
 
     def __post_init__(self) -> None:
         self.browser_profile = self.browser_profile or f"browser-profiles/{self.id}"

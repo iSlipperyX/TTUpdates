@@ -18,7 +18,7 @@ from ..store import VideoItem
 from . import theme
 from .editor import PostEditor
 from .state import AppState, Job
-from .widgets import (ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, account_badge, fmt_dur, label, panel,
+from .widgets import (ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, badge_for, fmt_dur, label, panel,
                       thumb_pixmap)
 
 ID_ROLE = Qt.UserRole + 1
@@ -151,7 +151,7 @@ class LibraryPage(QWidget):
         if len(self.state.accounts) > 1:
             self.filter.insertSeparator(self.filter.count())
             for a in self.state.accounts:
-                self.filter.addItem(QIcon(account_badge(a.id, a.label, 18)), a.label, f"account:{a.id}")
+                self.filter.addItem(QIcon(badge_for(a, 18)), a.label, f"account:{a.id}")
         # findData(None) would match the separator, so a first fill (nothing chosen yet) starts at "All videos".
         self.filter.setCurrentIndex(max(0, self.filter.findData(current)) if current else 0)
         self.filter.blockSignals(False)
@@ -380,7 +380,7 @@ class LibraryPage(QWidget):
             also.setToolTip("Queues a copy for another account; the posted entry stays as it is")
             also.setEnabled(bool(posted))
             for a in self.state.accounts:
-                icon = QIcon(account_badge(a.id, a.label, 18))
+                icon = QIcon(badge_for(a, 18))
                 queue_for.addAction(icon, a.label, lambda i=a.id: self.queue_selected(i))
                 also.addAction(icon, a.label, lambda i=a.id, p=posted: self.copy_to(p, i))
         else:

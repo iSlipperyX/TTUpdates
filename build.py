@@ -1,12 +1,14 @@
-"""Build the Windows app: dist/TikTokManager/TikTokManager.exe, a .zip of it, and the zip's SHA-256.
+"""Build the Windows app: dist/TikTokManager/TikTokManager.exe, a .zip of it, the zip's SHA-256
+and, when Inno Setup 6 is installed, the installer dist/TikTokManager-Setup.exe.
 
     pip install -e .[build]
-    python build.py
+    python build.py               (--installer: fail if Inno Setup isn't there)
 
-To publish the build as an update, use release.py instead (it runs this).
+Releases are built by GitHub Actions (.github/workflows/release.yml) when release.py pushes a tag.
 """
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 PACKAGING = ROOT / "packaging"
 DIST = ROOT / "dist"
 ZIP_NAME = "TikTokManager-windows.zip"  # the updater looks for exactly this asset name
+SETUP_NAME = "TikTokManager-Setup.exe"
 
 
 def app_version() -> str:
@@ -57,7 +60,29 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def find_iscc() -> Path | None:
+    """Inno Setup's compiler, if it's installed."""
+    found = shutil.which("iscc")
+    if found:
+        return Path(found)
+    for base in (os.environ.get("PROGRAMFILES(X86)"), os.environ.get("PROGRAMFILES"), os.environ.get("LOCALAPPDATA")):
+        for sub in (("Inno Setup 6",), ("Programs", "Inno Setup 6")):
+            if base and (path := Path(base).joinpath(*sub, "ISCC.exe")).is_file():
+                return path
+    return None
+
+
+def build_installer(version: str, app_dir: Path) -> Path:
+    iscc = find_iscc()
+    if iscc is None:
+        raise FileNotFoundError("Inno Setup 6 isn't installed (winget install JRSoftware.InnoSetup)")
+    subprocess.run([str(iscc), "/Q", f"/DAppVersion={version}", f"/DSourceDir={app_dir}", f"/DOutputDir={DIST}",
+                    str(PACKAGING / "TikTokManager.iss")], check=True, cwd=PACKAGING)
+    return DIST / SETUP_NAME
+
+
 def main() -> int:
+    need_installer = "--installer" in sys.argv[1:]
     version = app_version()
     write_version_info(version)
     subprocess.run([sys.executable, str(PACKAGING / "make_icon.py"), str(PACKAGING / "tiktokmanager.ico")], check=True)
@@ -73,6 +98,13 @@ def main() -> int:
     size = sum(f.stat().st_size for f in app_dir.rglob("*") if f.is_file()) / 1e6
     print(f"\nBuilt TikTok Manager {version}: {app_dir / 'TikTokManager.exe'} ({size:.0f} MB folder)")
     print(f"Zip: {archive} ({archive.stat().st_size / 1e6:.0f} MB)\nSHA-256: {digest}")
+    try:
+        setup = build_installer(version, app_dir)
+        print(f"Installer: {setup} ({setup.stat().st_size / 1e6:.0f} MB)")
+    except FileNotFoundError as exc:
+        if need_installer:
+            raise SystemExit(f"No installer: {exc}") from exc
+        print(f"No installer built: {exc}")
     return 0
 
 
