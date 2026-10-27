@@ -124,19 +124,26 @@ class SettingsDialog(QDialog):
 
         # AI
         f = _form(tabs, "AI", "Optional. Claude watches frames from each clip, predicts how it will do on "
-                              "TikTok and writes a caption and hashtags. Uses your Anthropic API key "
-                              "(console.anthropic.com); each rating is one API call.")
+                              "TikTok and writes a caption and hashtags; ✨ Hashtags writes just the hashtags "
+                              "(quicker and cheaper). Uses your Anthropic API key (console.anthropic.com); each "
+                              "one is a single API call.")
         self.ai_key = QLineEdit(settings.ai_api_key)
         self.ai_key.setEchoMode(QLineEdit.Password)
-        self.ai_key.setPlaceholderText("sk-ant-…")
+        from ..clipmonster import ai_key as clipmonster_key
+
+        shared = bool(clipmonster_key())
+        self.ai_key.setPlaceholderText("leave empty to use ClipMonster's key" if shared else "sk-ant-…")
         f.addRow("Anthropic API key", self.ai_key)
+        if shared:
+            f.addRow("", label("ClipMonster on this PC has a key, so the AI works without one here. A key typed "
+                               "above is used instead.", "muted", wrap=True))
         self.ai_model = _combo([("claude-opus-5-5", "Claude Opus 5.5 (best)"), ("claude-sonnet-5-5", "Claude Sonnet 5.5 (cheaper)"),
                                 ("claude-haiku-5-5", "Claude Haiku 5.5 (cheapest)")], settings.ai_model)
         f.addRow("Model", self.ai_model)
         f.addRow("Niche / audience", label("Set for each account in Manage accounts, so captions fit "
                                            "each account's audience.", "muted", wrap=True))
         self.tag_count = QSpinBox(minimum=0, maximum=10, value=settings.ai_hashtag_count)
-        f.addRow("Hashtags to suggest", self.tag_count)
+        f.addRow("Hashtags per video", self.tag_count)
 
         # API
         f = _form(tabs, "TikTok API", "Only needed if you choose 'Official TikTok API' above. Create an app at "
@@ -253,6 +260,11 @@ class SettingsDialog(QDialog):
                                  "as the caption otherwise")
         self.watch_ai.setChecked(settings.watch_ai)
         f.addRow("", self.watch_ai)
+        self.watch_tags = QCheckBox("Write AI hashtags for each new clip")
+        self.watch_tags.setToolTip("A quick text-only Claude call per clip (much cheaper than an AI caption), with "
+                                   "the key on the AI tab. Clips that already have hashtags keep them")
+        self.watch_tags.setChecked(settings.watch_hashtags)
+        f.addRow("", self.watch_tags)
         self.remind = QCheckBox("Remind me when it's time to post a video (accounts without autopilot)")
         self.remind.setChecked(settings.remind_to_post)
         f.addRow("", self.remind)
@@ -316,6 +328,7 @@ class SettingsDialog(QDialog):
         s.watch_folders = [self.watch_list.item(i).text() for i in range(self.watch_list.count())]
         s.watch_target = self.watch_target.currentData()
         s.watch_ai = self.watch_ai.isChecked()
+        s.watch_hashtags = self.watch_tags.isChecked()
         s.remind_to_post = self.remind.isChecked()
         s.morning_summary = self.morning.isChecked()
         s.share_results = self.share.isChecked()

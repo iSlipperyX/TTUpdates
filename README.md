@@ -36,6 +36,10 @@ account the window is on; click it (or press **Ctrl+1…9**) to switch, or to ad
 scores and "why it was picked" notes along. Every video gets a 0–100 score with a letter grade,
 a breakdown, and concrete tips ("1.2 s of silence at the start: trim it"). Write the caption and
 hashtags here, or click **✨ AI caption** to have Claude watch the clip, rate it and write them.
+**✨ Hashtags** writes just the hashtags (a quick text-only call): tags for the people, game or topic
+in the clip, fitted to the account's niche, leaning on the hashtags that got your posts the most views.
+No spam tags, and none the account already adds to every post. ClipMonster's Anthropic key is used
+when TikTok Manager has none of its own.
 
 **Queue**: the order the shown account's videos will post in. Drag to reorder, or use **Sort by score** / **Smart order**
 (best first, never two clips from the same source video back to back). Set posts per day, the
@@ -46,7 +50,8 @@ time comes.
 **Ready**: for posting by hand. The shown account's queued videos, in order, each with its caption,
 credit line and hashtags ready to copy. **Copy caption**, drag the file in from **Show file** (or
 **Open TikTok upload**), post it in TikTok, then click **Mark as posted** (there's an **Undo** for a
-few seconds). **Not this one** sends a video back to the Library, **Edit…** opens it on the Queue
+few seconds). **✨ Hashtags** has Claude write a video's hashtags (**✨ Hashtags for N** does
+every waiting video without any). **Not this one** sends a video back to the Library, **Edit…** opens it on the Queue
 page, and **Copy to a folder** copies the videos with a `.txt` caption beside each, for posting from
 a phone through a synced folder.
 

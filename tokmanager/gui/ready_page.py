@@ -18,11 +18,11 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from .. import ready, schedule
+from .. import ai, ready, schedule
 from ..scoring import grade
 from ..store import VideoItem
 from . import theme
-from .state import AppState
+from .state import AppState, Job
 from .widgets import Thumb, badge_for, fmt_dur, label
 
 MAX_CARDS = 60
@@ -119,6 +119,12 @@ class ReadyCard(QFrame):
         self.tags_btn = QPushButton("Copy hashtags")
         self.tags_btn.setEnabled(bool(tags))
         self.tags_btn.clicked.connect(lambda: self._copy(self.tags_btn, tags))
+        busy = item.id in page.tagging
+        self.ai_tags_btn = QPushButton("Writing…" if busy else "✨ Hashtags")
+        self.ai_tags_btn.setEnabled(not busy)
+        self.ai_tags_btn.setToolTip("Claude writes hashtags that fit this clip and the account's niche, learning "
+                                    "from your best posts (replaces the clip's own hashtags)")
+        self.ai_tags_btn.clicked.connect(lambda: page.ai_hashtags([item.id]))
         show = QPushButton("Show file")
         show.setToolTip("Opens the folder with the video selected, so you can drag it into TikTok's upload page")
         show.clicked.connect(lambda: reveal(item.path))
@@ -135,9 +141,10 @@ class ReadyCard(QFrame):
         done.setObjectName("primary")
         done.setToolTip("You've posted it on TikTok: it moves to the account's post history")
         done.clicked.connect(lambda: self.posted.emit(item.id))
-        for b in (self.copy_btn, self.tags_btn, show, play, edit, back):
+        for b in (self.copy_btn, self.tags_btn, self.ai_tags_btn, show, play, edit, back):
             buttons.addWidget(b)
-            b.setEnabled(b.isEnabled() and (item.exists() or b in (edit, back, self.copy_btn, self.tags_btn)))
+            b.setEnabled(b.isEnabled() and (item.exists() or b in (edit, back, self.copy_btn, self.tags_btn,
+                                                                   self.ai_tags_btn)))
         buttons.addStretch(1)
         buttons.addWidget(done)
         body.addLayout(buttons)
@@ -225,6 +232,7 @@ class ReadyPage(QWidget):
         self.state = state
         self.setObjectName("page")
         self._undo: tuple[str, str] | None = None  # (item id, account id) of the last "Mark as posted"
+        self.tagging: set[str] = set()  # items Claude is writing hashtags for
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
@@ -249,6 +257,11 @@ class ReadyPage(QWidget):
                                  "for this account, best first")
         self.take_btn.clicked.connect(self.take_new_clips)
         bar.addWidget(self.take_btn)
+        self.all_tags_btn = QPushButton()
+        self.all_tags_btn.setToolTip("Claude writes hashtags for each waiting video that has none of its own "
+                                     "(one quick call per video)")
+        self.all_tags_btn.clicked.connect(lambda: self.ai_hashtags([i.id for i in self._untagged()]))
+        bar.addWidget(self.all_tags_btn)
         self.export_btn = QPushButton("Copy to a folder")
         self.export_btn.setToolTip("Copies these videos, in order, with a .txt caption beside each. Handy for "
                                    "posting from your phone through a synced folder")
@@ -310,7 +323,11 @@ class ReadyPage(QWidget):
         self.empty.setText(f"Nothing is waiting for {_esc(a.label)}.<br>{more}")
         self.scroll.setVisible(bool(items))
         self.empty.setVisible(not items)
-        sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error) for i in items]
+        untagged = self._untagged(items)
+        self.all_tags_btn.setText(f"✨ Hashtags for {len(untagged)}")
+        self.all_tags_btn.setVisible(len(untagged) > 1 and ai.has_key(st.settings))
+        sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error,
+                i.id in self.tagging) for i in items]
         sig.append((a.id, a.default_hashtags, st.settings.caption_template))
         if sig == self._sig:
             return
@@ -377,6 +394,37 @@ class ReadyPage(QWidget):
             self.refresh()
         else:
             self.settings_requested.emit()
+
+    def _untagged(self, items: list[VideoItem] | None = None) -> list[VideoItem]:
+        """Waiting videos without hashtags of their own (only the account's always-added ones)."""
+        items = ready.ready(self.state.store, self.state.active.id) if items is None else items
+        return [i for i in items if not i.hashtags.strip() and i.id not in self.tagging]
+
+    def ai_hashtags(self, ids: list[str]) -> None:
+        """Have Claude write hashtags for these videos, one quick call each."""
+        st = self.state
+        if not ai.has_key(st.settings):
+            QMessageBox.information(self, "AI hashtags", "Add your Anthropic API key in Settings → AI (or in "
+                                    "ClipMonster) to have Claude write hashtags.")
+            return
+        from .. import jobs
+
+        for item_id in ids:
+            item = st.store.get(item_id)
+            if item is None or item_id in self.tagging:
+                continue
+            self.tagging.add(item_id)
+            account = st.account_for(item)
+
+            def finished(_=None, i=item_id) -> None:
+                self.tagging.discard(i)
+                st.save_soon()
+                st.library_changed.emit()
+
+            st.run(Job(f"AI hashtags for {item.name}",
+                       lambda j, i=item_id, a=account: jobs.ai_hashtags(st.store, i, st.settings, a, j.log), kind="ai"),
+                   on_success=finished, on_failure=finished)
+        self.refresh()
 
     def take_new_clips(self) -> None:
         """Queue the watched folders' clips that are only in the Library for the shown account."""
