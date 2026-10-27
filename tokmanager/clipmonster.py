@@ -42,6 +42,7 @@ def read_folder_index(folder: Path) -> dict[str, dict]:
             "hook": clip.get("hook") or "",
             "rating": int(rating) if isinstance(rating, (int, float)) else None,
             "permission": auto.get("permission", ""),
+            "license": video.get("license") or "",
             "warnings": list(qc.get("warnings") or []),
             "rejected": qc.get("ok") is False or file.replace("\\", "/").startswith(f"{REJECTED_DIR}/"),
         }
@@ -49,8 +50,9 @@ def read_folder_index(folder: Path) -> dict[str, dict]:
 
 
 def needs_credit(meta: dict) -> bool:
-    """Creative Commons clips must credit the creator (ClipMonster's picking rules say so in the permission)."""
-    return "creative commons" in (meta.get("permission") or "").lower()
+    """Creative Commons clips must credit the creator. ClipMonster's picking rules say so in the
+    permission; for videos added by hand, the video's licence says it."""
+    return any("creative commons" in (meta.get(k) or "").lower() for k in ("permission", "license"))
 
 
 def credit_line(channel: str) -> str:
