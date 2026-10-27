@@ -3,8 +3,9 @@
 A Windows desktop app that **scores your videos for TikTok**, lets you **put them in posting order**,
 **posts them on a schedule**, and **tracks how they do** on your account.
 
-Run it: `dist\TikTokManager\TikTokManager.exe` (keep the whole `TikTokManager` folder together;
-`dist\TikTokManager-windows.zip` is the same thing zipped for moving to another PC).
+Install it with **TikTokManager-Setup.exe** from the [latest release](https://github.com/iSlipperyX/TTUpdates/releases/latest)
+(per user, no admin needed). `TikTokManager-windows.zip` from the same release is the portable version:
+unzip it anywhere and keep the `TikTokManager` folder together. Either way it updates itself.
 
 ## Accounts
 
@@ -24,6 +25,10 @@ account the window is on; click it (or press **Ctrl+1…9**) to switch, or to ad
   stops if it isn't the account the video is queued for.
 - Upgrading from 1.0: your queue, schedule, stats and TikTok login become the first account
   automatically. Nothing needs logging in again.
+- **Profile…** sets each account's **profile picture, name and bio**, and **Save and apply to TikTok**
+  fills in TikTok's Edit profile box for you, then checks TikTok took it. TikTok lets a name change only
+  once every 7 days; until then the picture and bio are still saved. **✨ Suggest bios** writes three
+  bios from the account's niche (needs the Anthropic API key).
 
 ## Pages
 
@@ -138,5 +143,10 @@ can run at a time, so nothing gets posted twice.
 pip install -e .[build,dev]
 python -m tokmanager          # run from source
 python -m pytest              # tests
-python build.py               # build dist\TikTokManager\TikTokManager.exe
+python build.py               # build dist\TikTokManager\ (+ the installer if Inno Setup 6 is installed)
 ```
+
+Releasing: write `release-notes/vX.Y.Z.md`, commit it, then `python release.py X.Y.Z`. That bumps the
+version, tags and pushes; GitHub Actions (`.github/workflows/release.yml`) builds the zip and installer
+on Windows and publishes the release. `python release.py X.Y.Z --local` builds and uploads from this PC
+instead (needs a GitHub token with Contents: Read and write).

@@ -568,19 +568,26 @@ class MainWindow(QMainWindow):
             return
         applying = profile.fingerprint(a)
 
-        def work(j: Job) -> list[str]:
+        def work(j: Job) -> tuple[list[str], str]:
             from .. import tiktok
 
             return tiktok.apply_profile(a.apply(st.settings), a, j.log, j.cancelled)
 
-        def done(changed: list[str]) -> None:
+        def done(result: tuple[list[str], str]) -> None:
+            changed, note = result
             if profile.fingerprint(a) == applying:  # not edited again meanwhile
-                profile.mark_applied(a)
+                if note:  # the name has to wait: keep showing it as not applied, with TikTok's reason
+                    a.profile_error = f"Name not changed yet. {note}"
+                else:
+                    profile.mark_applied(a)
             st.save_accounts()
             st.account_changed.emit()
             what = ", ".join(changed) if changed else "nothing needed changing"
-            self._log(f"✓ Profile for {a.handle} is on TikTok ({what}).")
-            QMessageBox.information(self, "Profile", f"{a.handle}'s profile is set on TikTok ({what}).")
+            self._log(f"✓ Profile for {a.handle} updated on TikTok ({what})." + (f" Name not changed: {note}" if note else ""))
+            text = f"{a.handle}'s profile is updated on TikTok ({what})."
+            if note:
+                text += f"\n\nThe name wasn't changed: {note} Apply again after that to set it."
+            (QMessageBox.warning if note else QMessageBox.information)(self, "Profile", text)
 
         def failed(msg: str) -> None:
             if msg == "Cancelled":

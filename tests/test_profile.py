@@ -72,7 +72,7 @@ def test_pending_until_applied_and_again_after_an_edit(tmp_path):
     profile.use_photo(a, profile.prepare_photo(picture(tmp_path, 300, 300), a.id))
     assert profile.pending(a)  # a new photo needs applying
     a.profile_error = "TikTok didn't save it"
-    assert "Couldn't apply" in profile.status(a)
+    assert "Not fully applied" in profile.status(a)
     # It all survives a restart.
     accs.save()
     again = Accounts.load(Settings()).items[0]

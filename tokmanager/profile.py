@@ -99,7 +99,7 @@ def status(a: Account) -> str:
     if not is_set(a):
         return "No profile set up yet."
     if a.profile_error and a.profile_applied != fingerprint(a):
-        return f"Couldn't apply the profile: {a.profile_error}"
+        return f"Not fully applied: {a.profile_error}"
     if pending(a):
         return "Profile set up, not applied to TikTok yet."
     when = time.strftime("%d %b %H:%M", time.localtime(a.profile_applied_at)) if a.profile_applied_at else ""
