@@ -104,9 +104,12 @@ def run() -> str:
     def browser():
         from playwright.sync_api import sync_playwright
 
+        from .tiktok.browser import SANDBOX
+
         s = Settings.load()
         with sync_playwright() as pw:
-            b = pw.chromium.launch(channel=s.browser_channel or "msedge", headless=True)
+            b = pw.chromium.launch(channel=s.browser_channel or "msedge", headless=True,
+                                   chromium_sandbox=SANDBOX)
             page = b.new_page()
             page.set_content("<p id=x>ok</p>")
             text = page.locator("#x").inner_text()
