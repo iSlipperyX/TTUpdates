@@ -77,6 +77,9 @@ class AppState(QObject):
         self.settings = Settings.load()
         self.store = Store()
         self.accounts = Accounts.load(self.settings)
+        # The last look at the watched folders (ready.watch_report), for the Ready page
+        self.watch_reports: list = []
+        self.watch_checked_at = 0.0
         if self.store.adopt(self.accounts.ids(), self.accounts.items[0].id):
             self.store.save()
         for a in self.accounts:  # e.g. the account made from a 1.0 install: its @name was in the stats

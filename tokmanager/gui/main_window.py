@@ -163,12 +163,13 @@ class MainWindow(QMainWindow):
         root.addWidget(foot)
 
         # Wiring
-        state.message.connect(self._log)
+        state.message.connect(self._show_line)
         state.jobs_changed.connect(self._jobs_changed)
         self.queue.post_requested.connect(self.post)
         self.ready.edit_requested.connect(self._edit_in_queue)
         self.ready.import_requested.connect(lambda: self.watch_tick(manual=True))
         self.ready.settings_requested.connect(lambda: self.open_settings("Ready to upload"))
+        self.ready.watch_clipmonster_requested.connect(lambda: self.offer_clipmonster(asked=True))
         self.account.login_requested.connect(self.login)
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
@@ -182,6 +183,7 @@ class MainWindow(QMainWindow):
         for n in range(1, 10):  # Ctrl+1…9 shows account 1…9
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, activated=lambda n=n: self._switch_to_number(n))
         self._warned_cant_post: set[str] = set()
+        self._missing_folders: set[str] = set()
         self._update_account_button()
 
         self._make_tray()
@@ -195,6 +197,7 @@ class MainWindow(QMainWindow):
         self.watch_timer = QTimer(self, interval=WATCH_CHECK_MS, timeout=self.watch_tick)
         self.watch_timer.start()
         QTimer.singleShot(FIRST_WATCH_CHECK_MS, self.watch_tick)
+        QTimer.singleShot(FIRST_WATCH_CHECK_MS // 2, self.offer_clipmonster)
         # Updates: a first check shortly after start, then every few hours.
         self.pending_release: updater.Release | None = None
         self._staged: tuple[Path, updater.Release] | None = None
@@ -232,6 +235,10 @@ class MainWindow(QMainWindow):
     # --- log / jobs -------------------------------------------------------------------
 
     def _log(self, msg: str) -> None:
+        """A line in the Activity log, also kept in tokmanager.log (via AppState.log)."""
+        self.state.log(msg)
+
+    def _show_line(self, msg: str) -> None:
         stamp = time.strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"{stamp}  {msg}")
         self.last_line.setText(msg)
@@ -355,10 +362,21 @@ class MainWindow(QMainWindow):
         if not folders or st.busy("watch"):
             return
 
-        def found(items) -> None:
+        def work(_j: Job):
+            items = ready.import_watched(st.store, folders)
+            return items, ready.watch_report(st.store, folders)
+
+        def found(result) -> None:
+            items, reports = result
+            st.watch_reports, st.watch_checked_at = reports, time.time()
+            for r in reports:  # said once per run; the Ready page keeps showing it
+                if not r.exists and r.folder not in self._missing_folders:
+                    self._missing_folders.add(r.folder)
+                    self._log(f"⚠ The watched folder {r.folder} can't be found. Change it in Settings → Ready to upload.")
             if not items:
                 if manual:
                     self._log("No new clips in your watched folders.")
+                st.library_changed.emit()  # the Ready page shows the counts
                 return
             got = ready.assign(st.store, st.accounts, items, s.watch_target)
             st.save_soon()
@@ -376,8 +394,33 @@ class MainWindow(QMainWindow):
                               lambda j, i=it.id, a=account: jobs.ai_item(st.store, i, s, j.log, account=a), kind="ai")
                     st.run(job, on_success=lambda _it: st.library_changed.emit())
 
-        st.run(Job("Checking watched folders", lambda j: ready.import_watched(st.store, folders), kind="watch"),
-               on_success=found, quiet=not manual)
+        st.run(Job("Checking watched folders", work, kind="watch"), on_success=found, quiet=not manual)
+
+    def offer_clipmonster(self, asked: bool = False) -> None:
+        """Offer to watch ClipMonster's Automation folder when it's set up here but not watched.
+
+        Asked once per folder by itself (again only if ClipMonster starts saving somewhere else);
+        the Ready page keeps a "Watch it" link for later.
+        """
+        from .ready_page import ClipMonsterOffer
+
+        st = self.state
+        s = st.settings
+        folder = ready.clipmonster_unwatched(s)
+        if folder is None or (not asked and (s.clipmonster_offered == str(folder) or not self.isVisible())):
+            return  # started in the tray: the Ready page says so when the window is opened
+        s.clipmonster_offered = str(folder)
+        st.save_settings()
+        dlg = ClipMonsterOffer(self, folder, [(a.id, a.label) for a in st.accounts], st.active.id)
+        if not dlg.exec():
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        s.watch_folders = [f for f in s.watch_folders if f] + [str(folder)]
+        s.watch_target = dlg.target()
+        st.save_settings()
+        self._log(f"Watching ClipMonster's folder {folder}. New clips come in every few minutes.")
+        self.nav_buttons[1].click()  # the Ready page, where they'll show up
+        self.watch_tick(manual=True)
 
     def _edit_in_queue(self, item_id: str) -> None:
         self.nav_buttons[2].click()

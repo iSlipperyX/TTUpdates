@@ -15,8 +15,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
+                               QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import ready, schedule
 from ..scoring import grade
@@ -150,10 +150,75 @@ class ReadyCard(QFrame):
         QTimer.singleShot(1500, lambda: button.setText(old))
 
 
+def _ago(t: float, now: float | None = None) -> str:
+    mins = int(((now or time.time()) - t) // 60)
+    return "just now" if mins < 1 else f"{mins} min ago" if mins < 60 else f"{mins // 60} h ago"
+
+
+def _folder_name(folder: str) -> str:
+    return Path(folder).name or folder
+
+
+def watch_summary(reports: list, checked_at: float, now: float | None = None) -> str:
+    """'TTVIDEOS: 5 clips brought in, 13 set aside by ClipMonster's quality check · checked 2 min ago'."""
+    parts = []
+    for r in reports:
+        if not r.exists:
+            parts.append(f"<span style='color:{theme.BAD}'>{_esc(_folder_name(r.folder))} can't be found</span>")
+            continue
+        bits = [f"{r.in_app} clip{'s' * (r.in_app != 1)} brought in"]
+        if r.waiting:
+            bits.append(f"{r.waiting} still being made")
+        if r.rejected:
+            bits.append(f"{r.rejected} set aside by ClipMonster's quality check")
+        if r.removed:
+            bits.append(f"{r.removed} you removed")
+        parts.append(f"{_esc(_folder_name(r.folder))}: " + ", ".join(bits))
+    text = " · ".join(parts)
+    return f"{text} · checked {_ago(checked_at, now)}" if text and checked_at else text
+
+
+class ClipMonsterOffer(QDialog):
+    """First start (or "Watch it" on the Ready page): bring ClipMonster's clips in by themselves."""
+
+    def __init__(self, parent: QWidget, folder: Path, accounts: list[tuple[str, str]], active: str):
+        super().__init__(parent)
+        self.setWindowTitle("Bring in ClipMonster's clips")
+        self.setMinimumWidth(480)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        lay.addWidget(label(f"<b>ClipMonster saves its Automation clips to</b><br>{_esc(str(folder))}", wrap=True))
+        lay.addWidget(label("TikTok Manager can watch that folder: every few minutes, new clips that pass "
+                            "ClipMonster's quality check come in, get scored and wait on the Ready page with "
+                            "their caption ready to copy.", "muted", wrap=True))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("New clips go to"))
+        self.where = QComboBox()
+        for aid, name in accounts:
+            self.where.addItem(f"{name}'s Ready page", aid)
+        if len(accounts) > 1:
+            self.where.addItem("Shared out between my accounts", "spread")
+        self.where.addItem("Only the Library (I queue them myself)", "library")
+        self.where.setCurrentIndex(max(0, self.where.findData(active)))
+        row.addWidget(self.where, 1)
+        lay.addLayout(row)
+        buttons = QDialogButtonBox()
+        ok = buttons.addButton("Watch this folder", QDialogButtonBox.AcceptRole)
+        ok.setObjectName("primary")
+        buttons.addButton("Not now", QDialogButtonBox.RejectRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def target(self) -> str:
+        return self.where.currentData()
+
+
 class ReadyPage(QWidget):
     edit_requested = Signal(str)  # item id: show it on the Queue page
     import_requested = Signal()
     settings_requested = Signal()
+    watch_clipmonster_requested = Signal()
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -179,6 +244,11 @@ class ReadyPage(QWidget):
         self.import_btn = QPushButton("Check for new clips")
         self.import_btn.setToolTip("Look in your watched folders now (they're checked every few minutes anyway)")
         self.import_btn.clicked.connect(self.import_requested.emit)
+        self.take_btn = QPushButton()
+        self.take_btn.setToolTip("Clips your watched folders brought in that are only in the Library: queue them "
+                                 "for this account, best first")
+        self.take_btn.clicked.connect(self.take_new_clips)
+        bar.addWidget(self.take_btn)
         self.export_btn = QPushButton("Copy to a folder")
         self.export_btn.setToolTip("Copies these videos, in order, with a .txt caption beside each. Handy for "
                                    "posting from your phone through a synced folder")
@@ -193,8 +263,11 @@ class ReadyPage(QWidget):
 
         self.hint = label("", "muted", wrap=True)
         self.hint.setTextFormat(Qt.RichText)
-        self.hint.linkActivated.connect(lambda _: self.settings_requested.emit())
+        self.hint.linkActivated.connect(self._link)
         root.addWidget(self.hint)
+        self.counts = label("", "muted", wrap=True)
+        self.counts.setTextFormat(Qt.RichText)
+        root.addWidget(self.counts)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -202,7 +275,7 @@ class ReadyPage(QWidget):
         self.empty = label("", "muted", wrap=True)
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setTextFormat(Qt.RichText)
-        self.empty.linkActivated.connect(lambda _: self.settings_requested.emit())
+        self.empty.linkActivated.connect(self._link)
         root.addWidget(self.empty, 1)
 
         self._sig = None
@@ -224,18 +297,17 @@ class ReadyPage(QWidget):
                              (f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued
                               else "Nothing waiting"))
         folders = [f for f in st.settings.watch_folders if f]
-        if folders:
-            where = ", ".join(Path(f).name or f for f in folders[:3]) + ("…" if len(folders) > 3 else "")
-            self.hint.setText(f"New clips come in from {_esc(where)} every few minutes. "
-                              f"<a href='settings' style='color:{theme.ACCENT_2}'>Change</a>")
-        else:
-            self.hint.setText("Tip: watch ClipMonster's Automation folder and its clips arrive here by themselves. "
-                              f"<a href='settings' style='color:{theme.ACCENT_2}'>Set it up</a>")
+        self._show_hint(folders)
         self.export_btn.setEnabled(bool(items))
         self.import_btn.setEnabled(bool(folders))
-        self.empty.setText(f"Nothing is waiting for {_esc(a.label)}.<br>Queue videos from the Library, or "
-                           f"<a href='settings' style='color:{theme.ACCENT_2}'>watch a folder</a> so new clips "
-                           "arrive by themselves.")
+        if not folders:
+            more = (f"Queue videos from the Library, or <a href='settings' style='color:{theme.ACCENT_2}'>watch a "
+                    "folder</a> so new clips arrive by themselves.")
+        elif self.take_btn.isVisibleTo(self):
+            more = f"New clips are waiting in the Library: press “{_esc(self.take_btn.text())}” to bring them here."
+        else:
+            more = "New clips show up here by themselves once ClipMonster (or you) put them in the watched folder."
+        self.empty.setText(f"Nothing is waiting for {_esc(a.label)}.<br>{more}")
         self.scroll.setVisible(bool(items))
         self.empty.setVisible(not items)
         sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error) for i in items]
@@ -259,6 +331,65 @@ class ReadyPage(QWidget):
         lay.addStretch(1)
         self.scroll.setWidget(box)
         QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(pos))
+
+    def _show_hint(self, folders: list[str]) -> None:
+        """Where new clips come from and go to, and what's become of them, so a gap is never silent."""
+        st = self.state
+        s, a = st.settings, st.active
+        link = f"style='color:{theme.ACCENT_2}'"
+        where = ", ".join(_folder_name(f) for f in folders[:3]) + ("…" if len(folders) > 3 else "")
+        target = s.watch_target
+        warn = False
+        cm = ready.clipmonster_unwatched(s)
+        if cm is not None:
+            warn = True
+            text = (f"ClipMonster saves its clips to <b>{_esc(str(cm))}</b>, which TikTok Manager isn't watching, "
+                    f"so they don't come in. <a href='watch-cm' {link}>Watch it</a>")
+        elif not folders:
+            text = ("Tip: watch ClipMonster's Automation folder and its clips arrive here by themselves. "
+                    f"<a href='settings' {link}>Set it up</a>")
+        elif target == "library":
+            warn = True
+            text = (f"New clips from {_esc(where)} go to the <b>Library</b>, not here (New clips is set to "
+                    f"“Leave them in the Library”). <a href='target-here' {link}>Send them here from now on</a>")
+        elif target not in ("spread", a.id) and st.accounts.get(target):
+            text = (f"New clips from {_esc(where)} go to {_esc(st.accounts.label_for(target))}'s queue. "
+                    f"<a href='settings' {link}>Change</a>")
+        else:
+            shared = " (shared out between your accounts)" if target == "spread" else ""
+            text = f"New clips from {_esc(where)} come in here every few minutes{shared}. <a href='settings' {link}>Change</a>"
+        self.hint.setText(text)
+        self.hint.setStyleSheet(f"color:{theme.WARN};" if warn else "")
+        self.counts.setText(watch_summary(st.watch_reports, st.watch_checked_at) if folders else "")
+        self.counts.setVisible(bool(self.counts.text()))
+        waiting = ready.unqueued_watched(st.store)
+        self.take_btn.setText(f"Queue {len(waiting)} new clip{'s' * (len(waiting) != 1)} here")
+        self.take_btn.setVisible(bool(waiting))
+
+    def _link(self, href: str) -> None:
+        st = self.state
+        if href == "watch-cm":
+            self.watch_clipmonster_requested.emit()
+        elif href == "target-here":
+            st.settings.watch_target = st.active.id
+            st.save_settings()
+            st.log(f"New clips from your watched folders now go to {st.active.label}'s Ready page.")
+            self.refresh()
+        else:
+            self.settings_requested.emit()
+
+    def take_new_clips(self) -> None:
+        """Queue the watched folders' clips that are only in the Library for the shown account."""
+        st = self.state
+        a = st.active
+        waiting = ready.unqueued_watched(st.store)
+        if not waiting:
+            return
+        best = sorted(waiting, key=lambda i: -(i.total if i.total is not None else i.source_score or 0))
+        st.store.enqueue([i.id for i in best], a.id)
+        st.log(f"Queued {len(best)} new clip{'s' * (len(best) != 1)} for {a.label}.")
+        st.save_soon()
+        st.library_changed.emit()
 
     def cards(self) -> list[ReadyCard]:
         box = self.scroll.widget()
