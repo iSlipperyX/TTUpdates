@@ -1,11 +1,13 @@
 """Publish a new version of TikTok Manager to the update repository on GitHub.
 
+    python release.py 1.1.0                      (notes from release-notes/v1.1.0.md)
     python release.py 1.1.0 --notes "Faster scoring, fixes a crash when ..."
     python release.py 1.1.0 --notes-file notes.md
 
-It sets VERSION in tokmanager/config.py, runs the tests, builds the app, then creates the
-GitHub release v1.1.0 with TikTokManager-windows.zip (+ its .sha256). Every installed copy
-picks the update up on its next check (at start-up and every 6 hours).
+It checks that this clone matches the repository's main branch on GitHub, sets VERSION in
+tokmanager/config.py, runs the tests, builds the app, then creates the GitHub release v1.1.0,
+tagged on the commit you built, with TikTokManager-windows.zip (+ its .sha256). Every installed
+copy picks the update up on its next check (at start-up and every 6 hours).
 
 Needs a GitHub token that can write to the repo, read from the GITHUB_TOKEN environment variable
 (or typed when asked). Create one at github.com/settings/personal-access-tokens: a fine-grained
@@ -28,6 +30,7 @@ import requests
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "tokmanager" / "config.py"
 DIST = ROOT / "dist"
+NOTES_DIR = ROOT / "release-notes"
 ZIP_NAME = "TikTokManager-windows.zip"
 API = "https://api.github.com"
 
@@ -48,6 +51,33 @@ def set_version(version: str) -> None:
     text = CONFIG.read_text(encoding="utf-8")
     CONFIG.write_text(re.sub(r'^VERSION = "[^"]+"', f'VERSION = "{version}"', text, count=1, flags=re.M),
                       encoding="utf-8")
+
+
+def git(*args: str) -> str | None:
+    """Output of a git command in this clone, or None when git or the clone isn't there."""
+    try:
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.rstrip() if r.returncode == 0 else None  # keep leading spaces: status lines start with one
+
+
+def local_commit() -> tuple[str | None, list[str]]:
+    """(HEAD commit, files with uncommitted changes) of this clone; (None, []) when it isn't a git clone.
+
+    tokmanager/config.py is left out: release.py bumps VERSION there itself.
+    """
+    head = git("rev-parse", "HEAD")
+    if head is None:
+        return None, []
+    status = git("status", "--porcelain", "--untracked-files=no") or ""
+    changed = [line[3:] for line in status.splitlines() if line[3:] != "tokmanager/config.py"]
+    return head, changed
+
+
+def default_notes(version: str) -> Path | None:
+    path = NOTES_DIR / f"v{version}.md"
+    return path if path.is_file() else None
 
 
 class GitHub:
@@ -82,6 +112,10 @@ class GitHub:
                 "content": base64.b64encode(readme.encode()).decode()})
             print("The repository was empty: added a README so releases can be tagged.")
 
+    def branch_head(self, branch: str) -> str | None:
+        r = self.call("GET", f"/branches/{branch}", ok=(200, 404))
+        return r.json()["commit"]["sha"] if r.status_code == 200 else None
+
     def latest_version(self) -> str | None:
         r = self.call("GET", "/releases/latest", ok=(200, 404))
         return r.json().get("tag_name", "").lstrip("vV") if r.status_code == 200 else None
@@ -89,9 +123,10 @@ class GitHub:
     def tag_exists(self, tag: str) -> bool:
         return self.call("GET", f"/releases/tags/{tag}", ok=(200, 404)).status_code == 200
 
-    def publish(self, tag: str, branch: str, title: str, notes: str, files: list[Path]) -> str:
+    def publish(self, tag: str, target: str, title: str, notes: str, files: list[Path]) -> str:
         # Create a draft, attach the files, then publish: users never see a release without its zip.
-        rel = self.call("POST", "/releases", json={"tag_name": tag, "target_commitish": branch, "name": title,
+        # target is the commit (or branch) the tag is made on.
+        rel = self.call("POST", "/releases", json={"tag_name": tag, "target_commitish": target, "name": title,
                                                    "body": notes, "draft": True}).json()
         try:
             upload = rel["upload_url"].split("{", 1)[0]
@@ -123,7 +158,12 @@ def main() -> int:
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise SystemExit("Use a version like 1.2.0")
     tag = f"v{version}"
-    body = args.notes_file.read_text(encoding="utf-8") if args.notes_file else (args.notes or "Bug fixes and improvements.")
+    notes_file = args.notes_file or (None if args.notes else default_notes(version))
+    if notes_file:
+        body = notes_file.read_text(encoding="utf-8").strip()
+        print(f"Release notes: {notes_file}")
+    else:
+        body = args.notes or "Bug fixes and improvements."
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or getpass.getpass(
         f"GitHub token for {args.repo} (input hidden): ").strip()
@@ -137,7 +177,24 @@ def main() -> int:
     if parse(version) < parse(current_version()):
         raise SystemExit(f"{version} is older than the code's current version {current_version()}.")
 
-    if current_version() != version:
+    # Build exactly what is on GitHub, and tag that commit, so the release matches the code.
+    head, changed = local_commit()
+    target = branch
+    if head is None:
+        print("Warning: this folder isn't a git clone, so the tag goes on the latest commit on GitHub.")
+    else:
+        if changed:
+            raise SystemExit("This clone has changes that aren't committed: " + ", ".join(changed[:5])
+                             + ("…" if len(changed) > 5 else "") + "\nCommit or undo them first.")
+        remote = gh.branch_head(branch)
+        if remote and remote != head:
+            raise SystemExit(f"This clone isn't at the latest {branch} on GitHub ({remote[:7]}); you're on "
+                             f"{head[:7]}.\nRun 'git checkout {branch}' and 'git pull' (or 'git push' if the "
+                             "newer commit is yours), then try again.")
+        target = head
+
+    bumped = current_version() != version
+    if bumped:
         set_version(version)
         print(f"Version set to {version} in tokmanager/config.py")
     if not args.skip_tests:
@@ -150,8 +207,11 @@ def main() -> int:
             raise SystemExit(f"Missing {f}; run without --skip-build.")
 
     gh.ensure_not_empty(branch)
-    url = gh.publish(tag, branch, f"TikTok Manager {version}", body, files)
+    url = gh.publish(tag, target, f"TikTok Manager {version}", body, files)
     print(f"\nPublished {tag}: {url}\nInstalled copies will offer the update on their next check.")
+    if bumped and head is not None:
+        print(f"\nThe version bump isn't on GitHub yet. Commit and push it:\n"
+              f"    git commit -am \"Release {version}\"\n    git push")
     return 0
 
 

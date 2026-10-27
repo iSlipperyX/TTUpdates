@@ -2,7 +2,6 @@
 
 import datetime as dt
 import subprocess
-from pathlib import Path
 
 import pytest
 
