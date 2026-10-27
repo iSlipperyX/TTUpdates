@@ -23,6 +23,7 @@ from . import theme
 from .account import AccountPage
 from .accounts_dialog import AccountsDialog, account_status
 from .library import LibraryPage
+from .login_dialog import LoginDialog
 from .queue_page import QueuePage
 from .ready_page import ReadyPage
 from .settings_dialog import SettingsDialog
@@ -399,6 +400,7 @@ class MainWindow(QMainWindow):
         if st.account_busy(a.id, ("login",)):
             return
         result: dict = {}
+        dialog = None if s.upload_method == "api" else LoginDialog(self, a.label, lambda: job.cancel())
 
         def work(j: Job):
             if s.upload_method == "api":
@@ -412,16 +414,17 @@ class MainWindow(QMainWindow):
                 from ..tiktok.login import login_window
 
                 # A plain browser window: TikTok refuses logins in an automated one ("Too many attempts").
-                if not login_window(s, a.browser_dir(), j.log, j.cancelled):
+                if not login_window(s, a.browser_dir(), j.log, j.cancelled, finish=dialog.finish.is_set):
                     j.log("Couldn't find Edge or Chrome to open by itself; using the app's browser window.")
                     with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
                         if not b.login():
                             raise RuntimeError("Login wasn't completed.")
+                j.log("Checking the login…")
                 with TikTokBrowser(s, a.browser_dir(), j.log, headless=True, cancelled=j.cancelled) as b:
                     if not b.logged_in():
                         a.logged_in = False
-                        raise RuntimeError("TikTok's login wasn't saved in that window. Log in there, wait for "
-                                           "your feed to appear, then close it.")
+                        raise RuntimeError("TikTok's login wasn't saved in that window. Press Log in again, "
+                                           "log in there and wait for your feed to appear.")
                     a.logged_in = True
                     name = b.whoami()
             if name:
@@ -436,6 +439,8 @@ class MainWindow(QMainWindow):
             jobs.refresh_account(st.store, s, a, j.log, j.cancelled)
 
         def finished(_=None):
+            if dialog is not None:
+                dialog.end()
             st.save_accounts()
             st.accounts_edited()
             if result.get("duplicate"):
@@ -444,9 +449,17 @@ class MainWindow(QMainWindow):
                                     "to the same TikTok account. Remove one in Manage accounts, or log this one in "
                                     "to a different TikTok account.")
 
+        def failed(msg: str) -> None:
+            finished()
+            if msg != "Cancelled":
+                QMessageBox.warning(self, "Login didn't finish", msg)
+
         job = Job(f"Logging {a.label} in to TikTok", work, kind="login")
         job.account_id = a.id
-        st.run(job, pool="tiktok", on_success=finished, on_failure=finished)
+        if dialog is not None:
+            job.signals.log.connect(dialog.show_line)
+            dialog.show()
+        st.run(job, pool="tiktok", on_success=finished, on_failure=failed)
 
     def logout(self) -> None:
         st = self.state
