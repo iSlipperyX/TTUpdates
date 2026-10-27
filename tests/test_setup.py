@@ -125,3 +125,55 @@ def test_the_login_button_asks_the_main_window_and_shows_the_result(tmp_path, ap
     st.active.logged_in, st.active.username = True, "cats"
     st.account_changed.emit()
     assert "Logged in as <b>@cats</b>" in dlg.login_label.text()
+
+
+def test_running_it_again_keeps_where_clips_go(tmp_path, app):
+    from tokmanager.gui.setup_wizard import SetupWizard
+    from tokmanager.gui.state import AppState
+
+    st = AppState()
+    st.settings.watch_folders, st.settings.watch_target = [str(tmp_path / "Clips")], "library"
+    dlg = SetupWizard(st)
+    assert dlg.target.currentData() == "library"  # chosen before, not the new-install default
+    dlg.finish()
+    assert st.settings.watch_target == "library"
+    b = st.accounts.add("Dogs")
+    st.settings.watch_target = b.id
+    dlg = SetupWizard(st)  # set up for the first account, while clips go to the other one
+    assert dlg.target.currentData() == b.id and dlg.target.currentText() == "Dogs's Ready page"
+
+
+def test_a_folder_that_cant_be_made_is_said_and_nothing_is_saved(tmp_path, app, monkeypatch):
+    from tokmanager.gui import setup_wizard
+    from tokmanager.gui.state import AppState
+
+    warned = []
+    monkeypatch.setattr(setup_wizard.QMessageBox, "warning", lambda *a, **k: warned.append(a[1]))
+    (tmp_path / "notes.txt").write_text("not a folder", encoding="utf-8")
+    st = AppState()
+    dlg = setup_wizard.SetupWizard(st)
+    dlg.go(2)
+    dlg.other.setText(f'"{tmp_path / "notes.txt" / "Clips"}"')  # pasted from "Copy as path", quotes and all
+    assert dlg.folders() == [str(tmp_path / "notes.txt" / "Clips")]
+    dlg.finish()
+    assert warned == ["Can't use that folder"] and dlg.pages.currentIndex() == 1
+    assert not st.settings.setup_done and st.settings.watch_folders == []
+
+
+def test_enter_after_typing_the_name_goes_to_the_next_step(tmp_path, app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from tokmanager.gui.setup_wizard import SetupWizard
+    from tokmanager.gui.state import AppState
+
+    st = AppState()
+    dlg = SetupWizard(st)
+    asked = []
+    dlg.login_requested.connect(lambda: asked.append(True))
+    dlg.show()
+    dlg.name.setFocus()
+    dlg.name.setText("Cats")
+    QTest.keyClick(dlg.name, Qt.Key_Return)
+    assert dlg.pages.currentIndex() == 1 and asked == [] and st.active.name == "Cats"
+    dlg.hide()

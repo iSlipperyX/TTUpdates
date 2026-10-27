@@ -214,7 +214,7 @@ class AccountsDialog(QDialog):
         self.profile_note.setText(profile.status(a))
         s = a.apply(self.state.settings)
         slots = ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(s))
-        what = "posts" if a.autopilot else "reminders"
+        what = "reminders" if not a.autopilot and self.state.settings.remind_to_post else "posts"
         self.schedule_note.setText(f"Schedule: {a.posts_per_day} {what} a day at {slots}, at least "
                                    f"{a.min_gap_minutes} min apart. Change it on the Queue page while this account "
                                    "is shown.")

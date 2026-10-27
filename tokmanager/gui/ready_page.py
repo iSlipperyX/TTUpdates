@@ -15,7 +15,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
@@ -79,6 +79,7 @@ class ReadyCard(QFrame):
         body.setSpacing(6)
         head = QHBoxLayout()
         self.title = label(f"{position}. {_esc(item.headline)}", "h2", wrap=True)
+        self.title.setTextFormat(Qt.RichText)
         self.title.setToolTip(Path(item.path).name)
         head.addWidget(self.title, 1)
         total = item.total
@@ -132,12 +133,12 @@ class ReadyCard(QFrame):
             body.addWidget(self.gone)
 
         self.text = ready.post_text(item, account, st.settings)
-        caption = label(_esc(self.text), wrap=True)
-        caption.setTextFormat(Qt.RichText)
-        caption.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        caption.setStyleSheet(f"background:{theme.BG}; border:1px dashed {theme.BORDER}; border-radius:7px; "
-                              "padding:8px;")
-        body.addWidget(caption)
+        self.caption = label(_esc(self.text), wrap=True)
+        self.caption.setTextFormat(Qt.RichText)
+        self.caption.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.caption.setStyleSheet(f"background:{theme.BG}; border:1px dashed {theme.BORDER}; border-radius:7px; "
+                                   "padding:8px;")
+        body.addWidget(self.caption)
 
         buttons = QHBoxLayout()
         self.copy_btn = QPushButton("Copy caption")
@@ -176,11 +177,10 @@ class ReadyCard(QFrame):
             buttons.addWidget(b)
         buttons.addStretch(1)
         buttons.addWidget(self.done_btn)
-        for b in (self.copy_btn, self.tags_btn, self.ai_tags_btn, self.show_btn, self.play_btn, self.edit_btn,
-                  back, self.done_btn):
-            b.pressed.connect(lambda: page.set_current(item.id))  # the keys then act on this card
         body.addLayout(buttons)
         lay.addLayout(body, 1)
+        for w in self.findChildren(QWidget):  # clicking or tabbing anywhere on the card makes it the current one
+            w.installEventFilter(self)
 
     def set_current(self, on: bool) -> None:
         """The card the keyboard shortcuts act on is outlined."""
@@ -194,11 +194,18 @@ class ReadyCard(QFrame):
         self.page.set_current(self.item.id)
         super().mousePressEvent(e)
 
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802 - Qt API
+        """The keys act on the card you're on: one you click anywhere in (the caption too) or tab into."""
+        if e.type() == QEvent.MouseButtonPress or (
+                e.type() == QEvent.FocusIn and e.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason)):
+            self.page.set_current(self.item.id)
+        return False
+
     def _copy(self, button: QPushButton, text: str) -> None:
         QApplication.clipboard().setText(text)
         old = button.text()
         button.setText("Copied ✓")
-        QTimer.singleShot(1500, lambda: button.setText(old))
+        QTimer.singleShot(1500, button, lambda: button.setText(old))  # dropped if the cards are rebuilt meanwhile
 
 
 def _ago(t: float, now: float | None = None) -> str:
@@ -280,6 +287,7 @@ class ReadyPage(QWidget):
         self.tagging: set[str] = set()  # items Claude is writing hashtags for
         self.current = ""  # id of the card the keys act on
         self._current_pos = 0  # its place, so the next card takes over when it leaves
+        self._current_account = ""  # the account it belongs to: another account starts again at its first card
         self.on_phone: set[str] = set()  # items in the phone folder (phone.sync's last result)
         self.gone: set[str] = set()  # items deleted from the phone folder, waiting to be marked posted
         root = QVBoxLayout(self)
@@ -294,8 +302,7 @@ class ReadyPage(QWidget):
         self.undo_btn = QPushButton("Undo")
         self.undo_btn.hide()
         self.undo_btn.clicked.connect(self.undo)
-        self._undo_timer = QTimer(self, singleShot=True, interval=UNDO_SECONDS * 1000,
-                                  timeout=lambda: self.undo_btn.hide())
+        self._undo_timer = QTimer(self, singleShot=True, interval=UNDO_SECONDS * 1000, timeout=self._undo_expired)
         bar.addWidget(self.undo_btn)
         bar.addStretch(1)
         self.import_btn = QPushButton("Check for new clips")
@@ -349,7 +356,8 @@ class ReadyPage(QWidget):
         # Only while this page is showing (Qt skips shortcuts of hidden widgets), so typing elsewhere is safe.
         for keys, action, _ in KEYS:
             for key in keys:
-                QShortcut(QKeySequence(key), self, activated=lambda a=action: self._key(a))
+                sc = QShortcut(QKeySequence(key), self, activated=lambda a=action: self._key(a))
+                sc.setAutoRepeat(action in ("next", "previous"))  # holding Enter marks one video, not several
 
         self._sig = None
         state.library_changed.connect(self.refresh)
@@ -370,6 +378,7 @@ class ReadyPage(QWidget):
         today = dt.datetime.combine(dt.date.today(), dt.time.min).timestamp()
         done = st.store.posts_since(today, a.id)
         text = f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued else \
+            f"{len(items)} failed video{'s' * (len(items) != 1)} to look at" if items else \
             "All done for now" if done else "Nothing waiting"
         self.summary.setText((f"{a.label}: " if multi else "") + text + (f" · {done} posted today ✓" if done else ""))
         folders = [f for f in st.settings.watch_folders if f]
@@ -396,6 +405,8 @@ class ReadyPage(QWidget):
                 i.id in self.tagging, i.id in self.on_phone, i.id in self.gone) for i in items]
         sig.append((a.id, a.default_hashtags, st.settings.caption_template))
         ids = [i.id for i in items[:MAX_CARDS]]
+        if a.id != self._current_account:
+            self._current_account, self.current, self._current_pos = a.id, "", 0
         if self.current not in ids:  # it was posted or taken out: the one after it (now in its place) takes over
             self.current = ids[min(self._current_pos, len(ids) - 1)] if ids else ""
         if sig == self._sig:
@@ -418,7 +429,7 @@ class ReadyPage(QWidget):
         lay.addStretch(1)
         self.scroll.setWidget(box)
         self._mark_current()
-        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(pos))
+        QTimer.singleShot(0, self.scroll, lambda: self.scroll.verticalScrollBar().setValue(pos))
 
     def _show_hint(self, folders: list[str]) -> None:
         """Where new clips come from and go to, and what's become of them, so a gap is never silent."""
@@ -613,12 +624,16 @@ class ReadyPage(QWidget):
         if ready.mark_posted(st.store, item_id) is None:
             return
         self._undo = (item_id, account_id)
-        self.undo_btn.setText(f"Undo “{short(item.headline, 30)}”")
+        self.undo_btn.setText(f"Undo “{short(item.headline, 30)}”".replace("&", "&&"))  # a single & would underline
         self.undo_btn.show()
         self._undo_timer.start()
         st.log(f"✔ Marked “{item.headline}” as posted on {st.accounts.label_for(account_id)}.")
         st.save_soon()
         st.library_changed.emit()
+
+    def _undo_expired(self) -> None:
+        self._undo = None  # Ctrl+Z only undoes while the button shows
+        self.undo_btn.hide()
 
     def undo(self) -> None:
         if not self._undo:

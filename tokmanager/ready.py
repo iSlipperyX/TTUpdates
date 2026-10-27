@@ -78,6 +78,7 @@ def watch_report(store: Store, folders: list[str], now: float | None = None,
     """Count what's in each watched folder and what became of it. Read-only; safe on a worker thread."""
     from .clipmonster import REJECTED_DIR, read_folder_index
     from .media import VIDEO_EXTS
+    from .phone import is_copy
     from .store import _key
 
     now = time.time() if now is None else now
@@ -94,9 +95,10 @@ def watch_report(store: Store, folders: list[str], now: float | None = None,
         if not r.exists:
             continue
         indexes: dict[Path, dict] = {}
+        copies: dict[Path, set[str]] = {}
         try:
             files = sorted(f for f in root.rglob("*") if f.suffix.lower() in VIDEO_EXTS
-                           and ".downloads" not in f.parts and not f.name.startswith("."))
+                           and ".downloads" not in f.parts and not f.name.startswith(".") and not is_copy(f, copies))
         except OSError:
             r.exists = False
             continue

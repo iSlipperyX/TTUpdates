@@ -8,6 +8,7 @@ import time
 import webbrowser
 from pathlib import Path
 
+import shiboken6
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
 
         unscored = [i.id for i in state.store.all() if not i.score and not i.analyze_error and i.exists()]
         if unscored:
-            QTimer.singleShot(500, lambda: self.library.score(unscored))
+            QTimer.singleShot(500, self, lambda: self.library.score(unscored))
         n_acc = len(state.accounts)
         self._log(f"{APP_NAME} {VERSION} ready. {len(state.store.items)} videos in the library, "
                   f"{len(state.store.queue())} queued" + (f" across {n_acc} accounts." if n_acc > 1 else "."))
@@ -528,9 +529,13 @@ class MainWindow(QMainWindow):
         a = st.active
         if st.account_busy(a.id, ("login",)):
             return
-        parent = parent or self
+        over = parent or self
         result: dict = {}
-        dialog = None if s.upload_method == "api" else LoginDialog(parent, a.label, lambda: job.cancel())
+        # Always the main window's own, shown over `parent`: closing setup mid-login mustn't take it along.
+        dialog = None if s.upload_method == "api" else LoginDialog(self, a.label, lambda: job.cancel())
+
+        def box_parent() -> QWidget:
+            return over if shiboken6.isValid(over) and over.isVisible() else self
 
         def work(j: Job):
             if s.upload_method == "api":
@@ -574,7 +579,7 @@ class MainWindow(QMainWindow):
             st.save_accounts()
             st.accounts_edited()
             if result.get("duplicate"):
-                QMessageBox.warning(parent, "Same TikTok account twice",
+                QMessageBox.warning(box_parent(), "Same TikTok account twice",
                                     f"@{a.username} is also added as “{result['duplicate']}”. Both entries would post "
                                     "to the same TikTok account. Remove one in Manage accounts, or log this one in "
                                     "to a different TikTok account.")
@@ -582,13 +587,15 @@ class MainWindow(QMainWindow):
         def failed(msg: str) -> None:
             finished()
             if msg != "Cancelled":
-                QMessageBox.warning(parent, "Login didn't finish", msg)
+                QMessageBox.warning(box_parent(), "Login didn't finish", msg)
 
         job = Job(f"Logging {a.label} in to TikTok", work, kind="login")
         job.account_id = a.id
         if dialog is not None:
             job.signals.log.connect(dialog.show_line)
             dialog.show()
+            if over is not self:
+                dialog.move(over.frameGeometry().center() - dialog.rect().center())
         st.run(job, pool="tiktok", on_success=finished, on_failure=failed)
 
     def logout(self) -> None:
@@ -1141,7 +1148,7 @@ class MainWindow(QMainWindow):
         self._log(f"Updated {APP_NAME} from {old_version} to {VERSION}.")
         self._notify("Updated", f"{APP_NAME} is now version {VERSION}.")
         if self.isVisible() and info.get("notes"):
-            QTimer.singleShot(800, lambda: self._show_notes_text(f"What's new in {VERSION}", info["notes"]))
+            QTimer.singleShot(800, self, lambda: self._show_notes_text(f"What's new in {VERSION}", info["notes"]))
 
     def after_failed_update(self, version: str) -> None:
         state = updater.load_state()

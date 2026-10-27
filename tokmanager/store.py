@@ -248,18 +248,20 @@ class Store:
         brings a removed file back.
         """
         from .clipmonster import REJECTED_DIR, credit_line, needs_credit, read_folder_index
+        from .phone import is_copy
 
         now = time.time() if now is None else now
         with self.lock:
             known = {_key(i.path) for i in self.items.values()}
             added: list[VideoItem] = []
             files: list[Path] = []
+            copies: dict[Path, set[str]] = {}
             for p in paths:
                 p = Path(p)
-                if p.is_dir():
+                if p.is_dir():  # not the phone folder's copies, if it's in there
                     files += sorted(f for f in p.rglob("*") if f.suffix.lower() in VIDEO_EXTS
                                     and ".downloads" not in f.parts and REJECTED_DIR not in f.parts
-                                    and not f.name.startswith("."))
+                                    and not f.name.startswith(".") and not is_copy(f, copies))
                 elif p.suffix.lower() in VIDEO_EXTS:
                     files.append(p)
             index_cache: dict[Path, dict] = {}

@@ -104,3 +104,22 @@ def test_the_phone_folder_follows_what_is_posted(window, tmp_path):
     w.phone_soon.stop()
     w.phone_sync()
     assert wait_for(lambda: first[0] not in st.phone_result.on_phone)
+
+
+def test_closing_setup_while_logging_in_lets_the_login_finish(window, monkeypatch):
+    from PySide6.QtCore import QEvent
+
+    from tokmanager.gui.login_dialog import LoginDialog
+
+    w = window(setup_done=False)
+    assert wait_for(lambda: w._setup is not None)
+    runs = []
+    monkeypatch.setattr(w.state, "run", lambda job, **kw: runs.append(kw))  # the browser never opens
+    w._setup.login_btn.click()
+    (login,) = w.findChildren(LoginDialog)
+    assert login.parent() is w and login.isVisible()
+    w._setup.skip_btn.click()  # setup closes while the login window is still open
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert w._setup is None and login.isVisible()
+    runs[0]["on_success"](None)  # then the login finishes
+    assert not login.isVisible() and w.state.settings.setup_done

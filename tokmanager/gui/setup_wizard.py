@@ -15,7 +15,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-                               QLineEdit, QPushButton, QRadioButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
+                               QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
 from .. import clipmonster, phone, ready
 from ..accounts import POSTING_MODES
@@ -61,6 +62,7 @@ class SetupWizard(QDialog):
         self.back_btn.clicked.connect(lambda: self.go(self.pages.currentIndex() - 1))
         self.next_btn = QPushButton("Next")
         self.next_btn.setObjectName("primary")
+        self.next_btn.setDefault(True)  # Enter goes on, even straight after typing the name
         self.next_btn.clicked.connect(self._next)
         buttons.addWidget(self.skip_btn)
         buttons.addStretch(1)
@@ -95,6 +97,7 @@ class SetupWizard(QDialog):
         lay.addLayout(form)
         row = QHBoxLayout()
         self.login_btn = QPushButton("Log in to TikTok…")
+        self.login_btn.setAutoDefault(False)
         self.login_btn.clicked.connect(self._login)
         row.addWidget(self.login_btn)
         self.login_label = label("", wrap=True)
@@ -128,6 +131,7 @@ class SetupWizard(QDialog):
         self.other = QLineEdit()
         self.other.setPlaceholderText("another folder (optional)")
         pick = QPushButton("Choose…")
+        pick.setAutoDefault(False)
         pick.clicked.connect(self._pick_folder)
         row.addWidget(self.other, 1)
         row.addWidget(pick)
@@ -136,10 +140,15 @@ class SetupWizard(QDialog):
         target_row.addWidget(label("New clips go to"))
         self.target = QComboBox()
         self.target.addItem(f"{self.account.label}'s Ready page, best clips first", self.account.id)
+        other = self.state.accounts.get(s.watch_target)
+        if other is not None and other.id != self.account.id:  # chosen before: kept unless you change it
+            self.target.addItem(f"{other.label}'s Ready page", other.id)
         if len(self.state.accounts) > 1:
             self.target.addItem("Shared out between my accounts", "spread")
         self.target.addItem("Only the Library (I queue them myself)", "library")
-        if s.watch_target != "library":
+        # With folders watched already, keep where their clips go now. Otherwise "library" is only the
+        # default for a new install, so suggest the Ready page.
+        if s.watch_folders or s.watch_target != "library":
             self.target.setCurrentIndex(max(0, self.target.findData(s.watch_target)))
         target_row.addWidget(self.target, 1)
         lay.addLayout(target_row)
@@ -251,7 +260,8 @@ class SetupWizard(QDialog):
 
         s = replace(self.state.settings_for(self.account), posts_per_day=self.per_day.value())
         times = ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(s))
-        self.times.setText(("at " if self.mode() == "autopilot" else "reminders at ") + times)
+        reminders = self.mode() == "hand" and self.state.settings.remind_to_post
+        self.times.setText(("reminders at " if reminders else "at ") + times)
 
     def mode(self) -> str:
         return next((v for v, rb in self.mode_buttons.items() if rb.isChecked()), "hand")
@@ -262,7 +272,7 @@ class SetupWizard(QDialog):
         out = []
         if self.cm_folder is not None and self.watch_cm.isEnabled() and self.watch_cm.isChecked():
             out.append(str(self.cm_folder))
-        other = self.other.text().strip()
+        other = self.other.text().strip().strip('"').strip()  # pasted with "Copy as path", say
         if other and not ready.watched(s.watch_folders + out, other):
             out.append(other)
         return out
@@ -274,9 +284,14 @@ class SetupWizard(QDialog):
         self._save_name()
         new = self.folders()
         for folder in new:
-            Path(folder).mkdir(parents=True, exist_ok=True)
+            try:
+                Path(folder).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:  # a drive that isn't there, a name Windows refuses…
+                QMessageBox.warning(self, "Can't use that folder", f"{folder}\n\n{exc}")
+                self.go(1)
+                return
         s.watch_folders = [f for f in s.watch_folders if f] + new
-        if new or s.watch_folders:
+        if s.watch_folders:
             s.watch_target = self.target.currentData()
         if self.phone_folder is not None and self.mode() == "hand":  # autopilot: nothing goes to the phone anyway
             s.phone_folder = str(self.phone_folder) if self.use_phone.isChecked() else ""

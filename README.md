@@ -62,7 +62,8 @@ waiting and what you've posted today. **✨ Hashtags** has Claude write a video'
 the Library, and **Edit…** opens it on the Queue page. Without a phone folder, **Copy to a folder**
 copies the videos with a `.txt` caption beside each.
 
-Everything on the Ready page works from the keyboard. The outlined card is the one the keys act on:
+Everything on the Ready page works from the keyboard. The keys act on the outlined card: the one you
+last clicked or tabbed into, or moved to with ↓ / ↑.
 
 | Key | Does |
 |---|---|
@@ -71,7 +72,7 @@ Everything on the Ready page works from the keyboard. The outlined card is the o
 | F, P | show the file (to drag into TikTok) / play it |
 | T, E | ✨ hashtags / edit on the Queue page |
 | Enter | mark as posted (the next video takes over) |
-| Ctrl+Z | undo the last "mark as posted" |
+| Ctrl+Z | undo the last "mark as posted" (while its **Undo** button shows) |
 
 **Account**: log the shown account in, then see followers, likes, every video's views, likes, comments, shares and
 engagement, plus the change since the last refresh. "Posted from this app" is the history of
@@ -114,7 +115,9 @@ With more than one account, each gets its own subfolder.
 - On your phone, open the folder in the OneDrive app, save the clip, paste its caption into TikTok,
   post, then delete the clip there. A clip you delete isn't copied back: its card on the Ready page
   asks whether you posted it (**Mark as posted**) or want it back in the folder.
-- Only files the app put there are touched. Accounts on autopilot are left out (they post themselves).
+- Only files the app put there are touched, and each PC keeps its own list, so two PCs can share the
+  folder. Accounts on autopilot are left out (they post themselves). The folder can even sit inside a
+  watched folder: its copies aren't brought in again as new clips.
 
 ## How the score works
 

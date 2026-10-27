@@ -345,15 +345,16 @@ class QueuePage(QWidget):
     def _update_next(self) -> None:
         """The daily times and what happens next, which depend on how the account posts."""
         a = self.state.active
-        what = "posting times" if a.autopilot else "reminder times"
+        s = self.state.settings
+        reminders = not a.autopilot and s.remind_to_post  # Settings → Ready to upload can turn them off
+        what = "reminder times" if reminders else "posting times"
         self.slots.setText(f"Daily {what}: " + ", ".join(t.strftime("%H:%M")
                                                         for t in schedule.daily_slots(self.state.settings_for())))
         q = [i for i in self.state.store.queue(a.id) if i.status == "queued" and i.planned_at]
-        s = self.state.settings
         if not a.autopilot:
             nxt = f" Next: <b>{_esc(q[0].headline)}</b> at {schedule.fmt_when(q[0].planned_at)}." if q else ""
             self.next_label.setText(f"You post these yourself from the <a href='ready' style='color:{theme.ACCENT_2}'>"
-                                    f"Ready page</a>, with a reminder at each time.{nxt}")
+                                    f"Ready page</a>{', with a reminder at each time' if reminders else ''}.{nxt}")
         elif not jobs.can_autopost(a, s):
             self.next_label.setText(f"<span style='color:{theme.WARN}'>● On, but {_esc(a.label)} isn't logged in.</span> "
                                     "Log in on the Account page so autopilot can post.")

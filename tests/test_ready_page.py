@@ -235,3 +235,107 @@ def test_settings_dialog_sets_the_phone_folder_and_can_ask_for_setup(state, app,
     again = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Run first-run setup again")
     again.click()
     assert dlg.setup_requested and dlg.result() == QDialog.Accepted
+
+
+def test_the_keys_act_on_the_card_you_click_or_tab_into(state, app):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QFocusEvent
+    from PySide6.QtTest import QTest
+
+    from tokmanager.gui.ready_page import ReadyPage
+
+    page = ReadyPage(state)
+    page.resize(1000, 700)
+    page.show()
+    app.processEvents()
+    good, fine = page.cards()
+    QTest.mouseClick(fine.caption, Qt.LeftButton)  # in its caption, to select some of it
+    assert page.current == fine.item.id and fine.objectName() == "panelCurrent"
+    QApplication.sendEvent(good.copy_btn, QFocusEvent(QEvent.FocusIn, Qt.TabFocusReason))
+    assert page.current == good.item.id
+    QApplication.sendEvent(fine.copy_btn, QFocusEvent(QEvent.FocusIn, Qt.OtherFocusReason))
+    assert page.current == good.item.id  # focus moved by the app (cards rebuilt, say), not by you
+    page.hide()
+
+
+def test_holding_enter_marks_one_video_and_undo_ends_with_its_button(state, app):
+    from PySide6.QtGui import QShortcut
+    from PySide6.QtTest import QTest
+
+    from tokmanager.gui.ready_page import ReadyPage
+
+    page = ReadyPage(state)
+    repeats = {sc.key().toString(): sc.autoRepeat() for sc in page.findChildren(QShortcut)}
+    assert not repeats["Return"] and not repeats["Ctrl+Z"] and repeats["Down"] and repeats["J"]
+    first = page.cards()[0].item
+    page._undo_timer.setInterval(30)  # instead of 20 seconds
+    page.mark_posted(first.id)
+    QTest.qWait(100)
+    assert not page.undo_btn.isVisibleTo(page)
+    page._key("undo")  # Ctrl+Z long after
+    assert first.status == "posted"
+
+
+def test_a_hook_with_an_ampersand_shows_as_written(state, app):
+    from PySide6.QtCore import Qt
+
+    from tokmanager.gui.ready_page import ReadyPage
+
+    good = next(i for i in state.store.items.values() if i.title == "good")
+    good.hook = "Tom & Jerry"
+    page = ReadyPage(state)
+    card = page.cards()[0]
+    assert card.title.textFormat() == Qt.RichText and card.title.text() == "1. Tom &amp; Jerry"
+    page.mark_posted(good.id)
+    assert page.undo_btn.text() == "Undo “Tom && Jerry”"  # && shows as one &
+
+
+def test_another_account_starts_at_its_first_card(state, app, tmp_path):
+    from tokmanager.gui.ready_page import ReadyPage
+
+    b = state.accounts.add("Dogs")
+    items = state.store.add_paths([clipmonster_folder(tmp_path, name="Dogs/Show [def]")])
+    state.store.enqueue([i.id for i in sorted(items, key=lambda i: i.title, reverse=True)], b.id)
+    page = ReadyPage(state)
+    page._key("next")
+    assert page.current == page.cards()[1].item.id
+    state.switch_account(b.id)
+    assert page.cards()[0].item.account == b.id and page.current == page.cards()[0].item.id
+
+
+def test_only_failed_videos_left_says_so(state, app):
+    from tokmanager.gui.ready_page import ReadyPage
+
+    for it in state.store.queue(state.active.id):
+        it.status, it.last_error = "failed", "TikTok didn't take it"
+    page = ReadyPage(state)
+    assert page.summary.text() == "2 failed videos to look at" and len(page.cards()) == 2
+
+
+def test_cards_rebuilt_right_after_a_copy_dont_crash(state, app, monkeypatch):
+    import sys
+
+    import shiboken6
+    from PySide6.QtTest import QTest
+
+    from tokmanager.gui.ready_page import ReadyPage
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *e: errors.append(e))
+    page = ReadyPage(state)
+    page.cards()[0].copy_btn.click()  # "Copied ✓" for a moment
+    page.cards()[0].item.caption = "Changed"
+    state.library_changed.emit()  # the cards are rebuilt meanwhile
+    shiboken6.delete(page)  # and the page closed, before it put the scroll position back
+    QTest.qWait(1700)
+    assert errors == []
+
+
+def test_by_hand_times_are_reminders_only_while_reminders_are_on(state, app):
+    from tokmanager.gui.accounts_dialog import AccountsDialog
+    from tokmanager.gui.queue_page import QueuePage
+
+    state.settings.remind_to_post = False
+    page = QueuePage(state)
+    assert page.slots.text().startswith("Daily posting times:") and "reminder" not in page.next_label.text()
+    assert "posts a day" in AccountsDialog(state).schedule_note.text()
