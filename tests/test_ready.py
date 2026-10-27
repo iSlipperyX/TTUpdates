@@ -26,15 +26,16 @@ def ts(y, mo, d, h, mi=0):
 NOW = ts(2026, 10, 27, 10)
 
 
-def clipmonster_folder(tmp_path, name="Pod/Talk [abc]", permission="Creative Commons licence: credit the creator"):
+def clipmonster_folder(tmp_path, name="Pod/Talk [abc]", permission="Creative Commons licence: credit the creator",
+                       license=""):
     folder = tmp_path / "Automation" / name
     (folder / "_rejected").mkdir(parents=True)
     for f in ("01 - good.mp4", "02 - fine.mp4", "_rejected/03 - dud.mp4"):
         (folder / f).write_bytes(b"x")
     (folder / "clips.json").write_text(json.dumps({
-        "video": {"id": "abc", "title": "Big Talk", "channel": "Pod People"},
+        "video": {"id": "abc", "title": "Big Talk", "channel": "Pod People", "license": license},
         "source": "https://youtu.be/abc",
-        "automation": {"permission": permission},
+        **({"automation": {"permission": permission}} if permission else {}),
         "clips": [
             {"file": "01 - good.mp4", "title": "good", "score": 81, "reason": "laughs", "hook": "He quit on air",
              "rating": 8, "watch": "https://youtu.be/abc?t=60", "qc": {"ok": True}},
@@ -67,6 +68,17 @@ def test_clipmonster_index_brings_hooks_ratings_warnings_and_skips_rejects(tmp_p
     assert good.source_url == "https://youtu.be/abc?t=60"
     assert good.credit == "🎥 Pod People on YouTube (CC BY)"
     assert next(i for i in added if i.title == "fine").warnings == ["Ends mid-sentence"]
+
+
+@pytest.mark.parametrize("license,credited", [
+    ("Creative Commons Attribution license (reuse allowed)", True),
+    ("", False),
+])
+def test_credit_for_videos_added_by_hand_comes_from_the_licence(tmp_path, license, credited):
+    store = Store(tmp_path / "lib.json")
+    added = store.add_paths([clipmonster_folder(tmp_path, permission="", license=license)])
+    good = next(i for i in added if i.title == "good")
+    assert good.credit == ("🎥 Pod People on YouTube (CC BY)" if credited else "")
 
 
 def test_credit_goes_into_the_post_text_once(tmp_path):
