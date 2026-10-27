@@ -57,3 +57,66 @@ def test_this_versions_notes_are_in_the_repo():
     version = release.current_version()
     if version != "1.0.0":
         assert release.default_notes(version), f"release-notes/v{version}.md is missing"
+
+
+class FakeResponse:
+    def __init__(self, status, data=None):
+        self.status_code, self._data = status, data or {}
+
+    def json(self):
+        return self._data
+
+
+def test_token_that_cannot_create_releases_fails_before_building(monkeypatch):
+    gh = release.GitHub("me/repo", "token")
+    monkeypatch.setattr(gh, "call", lambda method, path, ok=(200, 201), **kw: FakeResponse(403))
+    with pytest.raises(SystemExit, match="Contents: Read and write"):
+        gh.create_draft("v1.2.0", "abc", "TikTok Manager 1.2.0", "notes")
+
+
+def test_failed_build_deletes_the_draft(clone, monkeypatch):
+    calls = []
+
+    class FakeGitHub:
+        def __init__(self, repo, token):
+            pass
+
+        def check_access(self):
+            return "main"
+
+        def latest_version(self):
+            return "1.0.0"
+
+        def tag_exists(self, tag):
+            return False
+
+        def branch_head(self, branch):
+            return release.local_commit()[0]
+
+        def ensure_not_empty(self, branch):
+            pass
+
+        def create_draft(self, *a):
+            calls.append("draft")
+            return {"id": 1}
+
+        def delete_draft(self, rel):
+            calls.append("deleted")
+
+        def publish(self, rel, files):
+            calls.append("published")
+
+    def failing_run(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(release, "GitHub", FakeGitHub)
+    config = clone / "tokmanager" / "config.py"
+    config.write_text('VERSION = "1.0.0"\nupdate_repo: str = "me/repo"\n', encoding="utf-8")
+    monkeypatch.setattr(release, "CONFIG", config)
+    monkeypatch.setattr(release.subprocess, "run", failing_run)
+    monkeypatch.setattr(release, "local_commit", lambda: ("a" * 40, []))
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr("sys.argv", ["release.py", "1.1.0", "--notes", "x", "--repo", "me/repo"])
+    with pytest.raises(subprocess.CalledProcessError):
+        release.main()
+    assert calls == ["draft", "deleted"]
