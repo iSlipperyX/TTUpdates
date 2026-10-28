@@ -134,6 +134,9 @@ class Settings:
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
         if "setup_done" not in data:  # saved by a version before first-run setup: not a new install
             s.setup_done = True
+        if "api_audited" not in data and s.upload_method == "api" and s.api_post_mode == "direct":
+            # Posted publicly through the API before 1.5 (which didn't ask): keep doing so.
+            s.api_audited = True
         if isinstance(s.watch_folders, str):  # hand-edited, or a single folder written as text
             s.watch_folders = [s.watch_folders]
         s.watch_folders = [str(f) for f in s.watch_folders or [] if f]

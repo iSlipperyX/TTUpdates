@@ -174,7 +174,12 @@ def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoIt
         return got
     fixed = next((a for a in accounts if a.id == target), None)
     waiting = {a.id: sum(1 for i in store.queue(a.id) if i.status == "queued") for a in accounts}
-    series_to: dict[str, str] = {}  # the parts of a series all go to the account part 1 went to
+    # The parts of a series all go to the account part 1 went to, also when they come in later.
+    ids = {a.id for a in accounts}
+    new = {i.id for i in items}
+    with store.lock:
+        series_to: dict[str, str] = {i.series: i.account for i in store.items.values()
+                                     if i.series and i.account in ids and i.id not in new}
     for it in series_order(items):
         owner = niche_account(accounts, it)
         if owner is not None:

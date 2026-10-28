@@ -658,11 +658,26 @@ class MainWindow(QMainWindow):
             from .. import tiktok
 
             name = tiktok.connect_api(s, a, j.log, j.cancelled)
-            if name and a.username and name.lower() != a.username.lower():
-                result["other"] = name
+            if name and a.username and name.lstrip("@").lower() != a.username.lstrip("@").lower():
+                result["other"] = name  # the wrong TikTok account: don't keep its tokens
+                try:
+                    tiktok.disconnect_api(s, a, j.log)
+                except Exception as e:  # noqa: BLE001 - the tokens file goes either way
+                    j.log(f"Couldn't sign the other account out of the API: {e}")
+                    a.tokens_path().unlink(missing_ok=True)
             return name
 
         def done(name: str) -> None:
+            if result.get("other"):
+                a.api_username, a.api_connected_at = "", 0.0
+                st.save_accounts()
+                st.accounts_edited()
+                self._log(f"✗ TikTok approved @{name}, not {a.handle}: the connection wasn't kept.")
+                QMessageBox.warning(self, "Connect API", f"TikTok approved @{name}, but {a.label} is "
+                                    f"{a.handle}, so the connection wasn't kept (its stats and posts would have "
+                                    f"gone to the wrong account).\n\nPress Log in on the Account page, log in as "
+                                    f"{a.handle} in the browser window, then press Connect API again.")
+                return
             a.api_username, a.api_connected_at = name, time.time()
             a.api_check, a.api_check_detail, a.api_check_at = "", "", 0.0
             if name and not a.username:
@@ -671,13 +686,7 @@ class MainWindow(QMainWindow):
             self._log(f"✓ {a.label} is connected to the TikTok API" + (f" as @{name}." if name else "."))
             self.live_monitor.resume(a.id)
             st.accounts_edited()
-            if result.get("other"):
-                QMessageBox.warning(self, "Connect API", f"TikTok approved @{result['other']}, but {a.label} is "
-                                    f"@{a.username}. Its stats and posts would go to the wrong account. Press "
-                                    "Disconnect API, log in to the right TikTok account in this account's browser "
-                                    "window, and connect again.")
-            else:
-                self.show_page(self.live)
+            self.show_page(self.live)
 
         def failed(msg: str) -> None:
             st.account_changed.emit()

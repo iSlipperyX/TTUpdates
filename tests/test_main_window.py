@@ -1,6 +1,7 @@
 """The main window: which page it opens on, first-run setup, and keeping the phone folder up to date."""
 
 import os
+import time
 
 import pytest
 
@@ -146,3 +147,37 @@ def test_connect_api_without_a_developer_app_offers_the_setup(window, monkeypatc
     monkeypatch.setattr(w, "open_settings", lambda tab="": opened.append(tab))
     w.connect_api()
     assert "developer app" in asked[0] and opened == ["TikTok API"]
+
+
+def test_connecting_the_wrong_tiktok_account_doesnt_keep_the_connection(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from tokmanager import tiktok
+
+    w = window()
+    st = w.state
+    st.settings.api_client_key, st.settings.api_client_secret = "key", "secret"
+    st.active.username = "cats"
+    signed_out, warned, resumed = [], [], []
+    monkeypatch.setattr(tiktok, "connect_api", lambda s, a, log, cancelled: "dogs")
+    monkeypatch.setattr(tiktok, "disconnect_api", lambda s, a, log: signed_out.append(a.id))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    monkeypatch.setattr(w.live_monitor, "resume", lambda aid: resumed.append(aid))
+    w.connect_api()
+    assert wait_for(lambda: warned)
+    assert signed_out == [st.active.id] and not resumed and st.active.api_username == ""
+    assert "@dogs" in warned[0] and "wasn't kept" in warned[0]
+
+
+def test_the_account_page_compares_with_a_day_before(window):
+    w = window()
+    st = w.state
+    now = time.time()
+    p = st.store.profile(st.active.id)
+    p.history = [[now - 30 * 3600, 100, 1000, 3], [now - 3600, 140, 1100, 4], [now, 150, 1200, 4]]
+    p.followers, p.likes, p.fetched_at = 150, 1200, now
+    w.account.refresh()
+    assert w.account.c_followers.sub.text() == "+50 in 24 h"
+    p.history = p.history[1:]
+    w.account.refresh()
+    assert w.account.c_followers.sub.text() == "+10 since 1 h ago"

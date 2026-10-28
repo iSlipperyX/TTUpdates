@@ -233,3 +233,18 @@ def test_settings_api_tab_walks_through_the_setup(app):
     dlg.apply()
     assert (s.api_client_key, s.api_audited, s.live_interval, s.api_redirect_port) == ("key", True, 120, 53700)
     assert not hasattr(dlg, "method")  # the app-wide "Upload with" is gone: each account has its own
+
+
+def test_videos_are_listed_newest_first_and_captions_show_as_written(made):
+    from tokmanager.store import TikTokVideo
+
+    st = made()
+    now = time.time()
+    st.store.update_tiktok_videos(st.active.id, [
+        TikTokVideo(id=str(n), description=d, create_time=now - n * 3600, views=v)
+        for n, (d, v) in enumerate([("banana <b>newest</b>", 5), ("apple", 50), ("zebra", 7)])])
+    mon, page = page_for(st)
+    mon.watcher(st.active.id).last_ok = now
+    page.refresh()
+    assert [page.videos.item(r, 0).text() for r in range(3)] == ["banana <b>newest</b>", "apple", "zebra"]
+    assert "&lt;b&gt;" in page.videos.item(0, 0).toolTip()

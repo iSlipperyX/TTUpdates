@@ -166,7 +166,7 @@ class AppState(QObject):
         self.save_accounts()
         from ..live import EventLog
 
-        EventLog(a.id).clear()  # its live activity feed
+        EventLog.remove(EventLog.path_for(a.id))  # its live activity feed
         # A browser profile can be a few hundred MB; delete it without freezing the window.
         threading.Thread(target=Accounts.delete_login, args=(a,), daemon=True).start()
         self.log(f"Removed {a.label}.")

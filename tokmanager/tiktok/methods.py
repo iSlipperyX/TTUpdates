@@ -80,6 +80,9 @@ def can_post(s: Settings, a: Account) -> tuple[bool, str]:
                        "Settings → TikTok API, or switch the account to Browser in Manage accounts.")
     if not api_connected(a):
         return False, f"{a.label} posts with the TikTok API, but it isn't connected. Press Connect API on the Account page."
+    if a.api_username and a.username and a.api_username.lstrip("@").lower() != a.username.lstrip("@").lower():
+        return False, (f"{a.label}'s TikTok API connection is for @{a.api_username.lstrip('@')}, not @{a.username}. "
+                       "Press Connect API on the Account page again, logged in as the right account.")
     return True, ""
 
 

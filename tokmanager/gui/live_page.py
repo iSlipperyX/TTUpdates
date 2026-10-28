@@ -10,7 +10,7 @@ import webbrowser
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                               QListWidgetItem, QPushButton, QSplitter, QStackedWidget, QStyledItemDelegate,
+                               QListWidgetItem, QPushButton, QSizePolicy, QSplitter, QStackedWidget, QStyledItemDelegate,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import live
@@ -81,8 +81,9 @@ class LivePage(QWidget):
         col = QVBoxLayout()
         col.setSpacing(0)
         self.who = label("", "h2")
-        self.status = label("", "muted")
+        self.status = label("", "muted", wrap=True)
         self.status.setTextFormat(Qt.RichText)
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # a long error mustn't widen the window
         col.addWidget(self.who)
         col.addWidget(self.status)
         bl.addLayout(col, 1)
@@ -199,6 +200,7 @@ class LivePage(QWidget):
         t.setItemDelegateForColumn(7, TrendDelegate(t))
         t.horizontalHeaderItem(3).setToolTip("Views gained in the last hour (once the live view has been on that long)")
         t.horizontalHeaderItem(7).setToolTip("Views over the last few hours, from the live view's readings")
+        t.sortByColumn(1, Qt.DescendingOrder)  # newest first, until you click another column
         t.doubleClicked.connect(self._open_video)
         self.videos = t
         ll.addWidget(t, 1)
@@ -262,8 +264,9 @@ class LivePage(QWidget):
         w = self.monitor.watcher(a.id)
 
         totals = live.today(w.log.events)
-        self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—",
-                             *(_delta(totals["followers"], "today") if p.fetched_at else ("", "")))
+        known = bool(p.fetched_at) and p.has_stats
+        self.c_followers.set(fmt_num(p.followers) if known else "—",
+                             *(_delta(totals["followers"], "today") if known else ("", "")))
         for card, key in ((self.c_views, "views"), (self.c_likes, "likes"), (self.c_comments, "comments"),
                           (self.c_shares, "shares")):
             n = totals[key]
@@ -292,7 +295,7 @@ class LivePage(QWidget):
             ]
             if hour:
                 cells[3].setForeground(QColor(theme.GOOD if hour > 0 else theme.BAD))
-            cells[0].setToolTip(v.description)
+            cells[0].setToolTip(_plain_tip(v.description))
             cells[0].setData(URL_ROLE, v.url)
             cells[7].setData(TREND_ROLE, w.trend(v.id) or [(h[0], h[1]) for h in v.history[-12:]])
             for c, cell in enumerate(cells):
@@ -342,7 +345,7 @@ class LivePage(QWidget):
                 head.setForeground(QColor(theme.MUTED))
                 f.addItem(head)
             li = QListWidgetItem(f"{time.strftime('%H:%M', time.localtime(e.at))}   {e.text}")
-            li.setToolTip(e.text)
+            li.setToolTip(_plain_tip(e.text))
             if e.kind in KIND_COLOUR:
                 li.setForeground(QColor(KIND_COLOUR[e.kind]))
             v = videos.get(e.video_id)
@@ -389,6 +392,11 @@ class LivePage(QWidget):
         url = li.data(URL_ROLE)
         if url:
             webbrowser.open(url)
+
+
+def _plain_tip(text: str) -> str:
+    """A caption as a tooltip, shown as written (Qt would read "<b>" in it as formatting)."""
+    return f"<p>{html.escape(text)}</p>" if text else ""
 
 
 def _delta(n: int, when: str) -> tuple[str, str]:

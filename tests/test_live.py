@@ -450,3 +450,127 @@ def test_results_for_clipmonster_carry_the_niche(tmp_path):
     st.items[it.id] = it
     rows = results.outcomes(st, now)
     assert rows and rows[0].niche == "n-gaming"
+
+
+# --- found in review ------------------------------------------------------------------------
+
+
+def _watch(tmp_path):
+    a = connected_account()
+    return a, Store(tmp_path / "lib.json"), live.Watcher(a.id, tmp_path / "live")
+
+
+def test_today_counts_the_whole_day_even_past_the_feed_limit(tmp_path):
+    a, st, w = _watch(tmp_path)
+    s = settings(live_interval=30)
+    t = live.day_start(time.time()) + 300  # today, so a restart keeps them too
+    w.apply(st, a, s, reading(t, videos=[(f"v{i}", f"clip number {i}", t - 86400, 0) for i in range(10)]))
+    for k in range(1, 400):  # 400 readings 30 s apart, each 10 videos moving: ~4,000 events
+        w.apply(st, a, s, reading(t + 30 * k, videos=[(f"v{i}", f"clip number {i}", t - 86400, 10 * k)
+                                                      for i in range(10)]))
+    assert len(w.log.events) > live.MAX_EVENTS
+    assert live.today(w.log.events, t + 30 * 399)["views"] == 10 * 10 * 399
+    again = live.EventLog(a.id, tmp_path / "live")  # after a restart too
+    assert live.today(again.events, t + 30 * 399)["views"] == 10 * 10 * 399
+
+
+def test_older_events_are_trimmed_while_the_app_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "MAX_EVENTS", 10)
+    log = live.EventLog("x", tmp_path)
+    old = time.time() - 3 * 86400
+    for n in range(40):
+        log.add([live.Event(at=old + n, kind="moved", text=f"e{n}")])
+    lines = (tmp_path / "x.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(log.events) == 10 and log.events[-1].text == "e39"
+    assert len(lines) <= 10 + live.MAX_EVENTS // 2 + 1
+
+
+def test_a_torn_last_line_doesnt_swallow_the_next_event(tmp_path):
+    path = tmp_path / "x.jsonl"
+    path.write_text('{"at": 1, "kind": "moved", "text": "ok"}\n{"at": 2, "kind": "mo', encoding="utf-8")
+    log = live.EventLog("x", tmp_path)
+    log.add([live.Event(at=time.time(), kind="seen", text="marked as posted")])
+    assert [e.text for e in live.EventLog("x", tmp_path).events] == ["ok", "marked as posted"]
+
+
+@pytest.mark.parametrize("interval", [60, 300, 600])
+def test_a_reading_on_time_is_never_summed_up_as_while_you_were_away(tmp_path, interval):
+    a, st, w = _watch(tmp_path)
+    s = settings(live_interval=interval)
+    t = 1_800_000_000.0
+    w.apply(st, a, s, reading(t, videos=[("v1", "hello there", t - 86400, 100)]))
+    events = w.apply(st, a, s, reading(t + interval + 8, videos=[("v1", "hello there", t - 86400, 150)]))
+    assert [e.kind for e in events] == ["moved"]
+
+
+def test_a_milestone_is_announced_once_even_when_the_count_wobbles(tmp_path):
+    a, st, w = _watch(tmp_path)
+    s = settings()
+    t = 1_800_000_000.0
+    said = []
+    for k, (f, views) in enumerate([(998, 9990), (1000, 10_001), (999, 9_995), (1000, 10_002), (1001, 10_010)]):
+        said += [e.text for e in w.apply(st, a, s, reading(t + 60 * k, followers=f,
+                                                           videos=[("v1", "a cat", t - 86400, views)]))
+                 if e.kind == "milestone"]
+    assert sorted(said) == ["🏆 @cats reached 1K followers.", "🏆 “a cat” passed 10K views."]
+
+
+def test_without_the_stats_permission_the_numbers_already_known_are_kept(tmp_path):
+    a, st, w = _watch(tmp_path)
+    s = settings()
+    t = 1_800_000_000.0
+    st.update_profile(a.id, Profile(username="cats", followers=12_000, likes=5, fetched_at=t - 3600), now=t - 3600)
+    events = w.apply(st, a, s, live.Reading(at=t, profile=Profile(username="cats", fetched_at=t, has_stats=False),
+                                            videos=[]))
+    assert not [e for e in events if e.kind in ("followers", "milestone")]
+    p = st.profile(a.id)
+    assert (p.followers, p.likes, p.has_stats) == (12_000, 5, True)
+    assert len(p.history) == 1  # no made-up point at 0
+
+
+def test_api_profile_says_when_it_couldnt_read_the_numbers(fake):
+    a = connected_account()
+    Tokens(access_token="act-0", refresh_token="rft-0", scope="user.info.basic,user.info.profile,video.list",
+           expires_at=time.time() + HOUR, refresh_expires_at=time.time() + 300 * 86400).save(a.tokens_path())
+    p = TikTokAPI(settings(), a.tokens_path()).profile()
+    assert p.username == "cats" and not p.has_stats
+
+
+def test_readings_of_a_different_tiktok_account_are_refused(tmp_path):
+    a, st, w = _watch(tmp_path)
+    t = 1_800_000_000.0
+    r = live.Reading(at=t, profile=Profile(username="dogs", followers=99_999, fetched_at=t), videos=[])
+    events = w.apply(st, a, settings(), r)
+    assert w.stopped and "@dogs" in w.stopped and events[0].kind == "error"
+    assert st.profile(a.id).followers == 0 and a.username == "cats"
+
+
+def test_posting_with_tokens_for_another_account_is_refused():
+    a = connected_account(post_with="api_draft", api_username="dogs")
+    ok, why = methods.can_post(settings(), a)
+    assert not ok and "@dogs" in why
+
+
+def test_running_out_of_time_on_the_approval_page_says_so(fake):
+    class Window:
+        closed = False
+
+        def wait_closed(self):
+            self.closed = True
+
+    a = connected_account()
+    with pytest.raises(ApiError, match="Timed out"):
+        TikTokAPI(settings(api_redirect_port=0), a.tokens_path()).connect(timeout=0.5, open_page=lambda u: Window())
+
+
+def test_an_api_poster_from_before_1_5_keeps_posting_publicly(tmp_path):
+    Settings().save()
+    path = Settings.path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("api_audited")
+    data.update(upload_method="api", api_post_mode="direct")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert Settings.load().api_audited
+    data["api_post_mode"] = "inbox"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert not Settings.load().api_audited

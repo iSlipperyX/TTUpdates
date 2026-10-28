@@ -215,9 +215,11 @@ class AccountPage(QWidget):
         when = f" · updated {_ago(p.fetched_at)}" if p.fetched_at else ""
         self.who.setText(f"{name}{when}")
 
-        prev = p.history[-2] if len(p.history) >= 2 else None
-        self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—", *self._delta(p.followers, prev[1] if prev else None))
-        self.c_likes.set(fmt_num(p.likes) if p.fetched_at else "—", *self._delta(p.likes, prev[2] if prev else None))
+        prev, since = _day_before(p.history)
+        self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—",
+                             *self._delta(p.followers, prev[1] if prev else None, since))
+        self.c_likes.set(fmt_num(p.likes) if p.fetched_at else "—",
+                         *self._delta(p.likes, prev[2] if prev else None, since))
         self.c_videos.set(fmt_num(p.video_count) if p.fetched_at else "—")
         vids = sorted(st.videos(a.id).values(), key=lambda v: v.create_time, reverse=True)
         total_views = sum(v.views for v in vids)
@@ -281,6 +283,7 @@ class AccountPage(QWidget):
 
     def _refresh_api(self, connected: bool) -> None:
         a, s = self.state.active, self.state.settings
+        self.api_status.setToolTip("")
         self.api_connect_btn.setVisible(not connected)
         self.api_test_btn.setVisible(connected)
         self.api_disconnect_btn.setVisible(connected)
@@ -313,15 +316,15 @@ class AccountPage(QWidget):
                        "fail": f"<span style='color:{theme.BAD}'>✖ test failed</span>"}.get(a.api_check, "tested")
             bits.append(f"{verdict} {_ago(a.api_check_at)}")
         self.api_status.setText(" · ".join(bits))
-        self.api_status.setToolTip(a.api_check_detail)
+        self.api_status.setToolTip(html.escape(a.api_check_detail).replace("\n", "<br>"))
 
-    def _delta(self, now: int, before: float | None) -> tuple[str, str]:
+    def _delta(self, now: int, before: float | None, since: str = "") -> tuple[str, str]:
         if before is None:
             return "", ""
         d = int(now - before)
         if d == 0:
-            return "no change since last refresh", ""
-        return (f"{'+' if d > 0 else ''}{fmt_num(d)} since last refresh", theme.GOOD if d > 0 else theme.BAD)
+            return f"no change {since}", ""
+        return (f"{'+' if d > 0 else ''}{fmt_num(d)} {since}", theme.GOOD if d > 0 else theme.BAD)
 
     def _insight(self) -> str:
         """Does a higher score actually mean more views on this account? Compare halves once there's data."""
@@ -432,6 +435,19 @@ class AccountPage(QWidget):
         self.state.save_soon()
         self.state.log(f"Queued it for {self.state.accounts.label_for(account_id)} too.")
         self.state.library_changed.emit()
+
+
+def _day_before(history: list[list[float]]) -> tuple[list[float] | None, str]:
+    """The point to compare the newest one with: the last from a day before it ("in 24 h"), else the
+    oldest there is ("since 3 h ago"). The live view adds points every half hour, so the one just
+    before would only be a few minutes of change."""
+    if len(history) < 2:
+        return None, ""
+    newest = history[-1][0]
+    day = [h for h in history[:-1] if newest - h[0] >= 86400]
+    if day:
+        return day[-1], "in 24 h" if newest - day[-1][0] < 1.5 * 86400 else f"since {_ago(day[-1][0])}"
+    return history[0], f"since {_ago(history[0][0])}"
 
 
 def _ago(ts: float) -> str:

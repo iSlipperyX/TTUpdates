@@ -214,6 +214,7 @@ class TikTokAPI:
         server.timeout = 1
         url = self.authorize_url(state, challenge)
         window = None
+        closed_by_user = False
         try:
             window = open_page(url) if open_page else None
             if window is None:
@@ -231,6 +232,7 @@ class TikTokAPI:
                     gone = gone or time.time()
                     if time.time() - gone > 2:  # a last moment for a redirect already on its way
                         break
+            closed_by_user = bool(gone)
         finally:
             server.server_close()
             if window is not None and not window.closed:
@@ -239,7 +241,7 @@ class TikTokAPI:
         if cancelled() and not result:
             raise ApiError("Cancelled")
         if not result:
-            if window is not None and window.closed:
+            if closed_by_user:
                 raise ApiError("The window was closed before TikTok Manager was approved.")
             raise ApiError("Timed out waiting for TikTok's approval page.")
         if result.get("state") != state:
@@ -334,14 +336,15 @@ class TikTokAPI:
         fields = ["open_id", "avatar_url", "avatar_large_url", "display_name"]
         if self.granted("user.info.profile"):
             fields += ["username", "bio_description"]
-        if self.granted("user.info.stats"):
+        stats = self.granted("user.info.stats")
+        if stats:
             fields += ["follower_count", "following_count", "likes_count", "video_count"]
         u = self._call("GET", "/user/info/", params={"fields": ",".join(fields)}).get("user", {})
         return Profile(username=u.get("username", ""), nickname=u.get("display_name", ""),
                        avatar=u.get("avatar_large_url") or u.get("avatar_url", ""), bio=u.get("bio_description", ""),
                        followers=int(u.get("follower_count") or 0),
                        following=int(u.get("following_count") or 0), likes=int(u.get("likes_count") or 0),
-                       video_count=int(u.get("video_count") or 0), fetched_at=time.time())
+                       video_count=int(u.get("video_count") or 0), fetched_at=time.time(), has_stats=stats)
 
     def videos(self, max_videos: int = 200, username: str = "") -> list[TikTokVideo]:
         fields = ("id,create_time,cover_image_url,share_url,video_description,duration,title,"

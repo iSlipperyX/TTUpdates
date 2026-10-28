@@ -44,7 +44,8 @@ class VideoItem:
     niche_id: str = ""  # stable across renames; shared back in results.json
     for_account: str = ""  # the TikTok @username the niche is for ("" = none named)
     # ClipMonster 2.4+ part series: one moment cut into parts, each but the last saying "follow for part 2".
-    # `series` is unique across the library (ClipMonster's id is only unique within one video's folder).
+    # `series` is unique across the library: ClipMonster's id is only unique within one clips folder, and
+    # the same video can be clipped into several folders (one per niche, or a later run), so it's keyed on it.
     series: str = ""
     part: int | None = None  # 1-based
     parts: int | None = None  # how many parts ClipMonster kept
@@ -147,6 +148,7 @@ class Profile:
     video_count: int = 0
     fetched_at: float = 0.0
     history: list[list[float]] = field(default_factory=list)  # [fetched_at, followers, likes, videos]
+    has_stats: bool = True  # False: the numbers weren't read (an API login without user.info.stats)
 
 
 @dataclass
@@ -318,7 +320,7 @@ class Store:
                     item.niche_id = meta.get("niche_id", "")
                     item.for_account = meta.get("account", "")
                     if meta.get("series"):
-                        item.series = f"{item.source_group}#{meta['series']}"
+                        item.series = f"{f.parent.resolve()}#{meta['series']}"
                         item.part, item.parts = meta.get("part"), meta.get("parts")
                     if needs_credit(meta):
                         item.credit = credit_line(item.source_channel)
@@ -474,7 +476,15 @@ class Store:
         now = time.time() if now is None else now
         with self.lock:
             st = self.stats_for(account)
-            p.history = _add_point(st.profile.history, [now, p.followers, p.likes, p.video_count], spacing)[-120:]
+            if not p.has_stats:  # keep the numbers the last full reading (or the browser) found
+                old = st.profile
+                p.followers, p.following, p.likes, p.video_count = old.followers, old.following, old.likes, \
+                    old.video_count
+                p.has_stats = bool(old.fetched_at) and old.has_stats
+                p.history = list(old.history)
+            else:
+                p.history = _add_point(st.profile.history, [now, p.followers, p.likes, p.video_count],
+                                       spacing)[-120:]
             p.username = p.username or st.profile.username
             p.bio = p.bio or st.profile.bio
             st.profile = p

@@ -43,9 +43,10 @@ FULL_EVERY = 30 * 60  # all of them (up to ALL_VIDEOS) this often, so older vide
 ALL_VIDEOS = 200
 HISTORY_SPACING = 30 * 60  # the library keeps one point per half hour of live readings (store._add_point)
 MAX_BACKOFF = 15 * 60  # after errors, wait at most this long before trying again
-AWAY_AFTER = 10 * 60  # a gap longer than this since the last reading is summed up as "while you were away"
+AWAY_AFTER = 10 * 60  # a gap longer than this (or 3 readings' worth) is summed up as "while you were away"
 FEED_VIDEOS = 6  # videos named in the feed per reading; the rest are summed up in one line
 MAX_EVENTS = 2000
+MAX_TODAY_EVENTS = 60_000  # today's are all kept beyond MAX_EVENTS, up to this (a day at 30 s is ~25,000)
 VIEW_MILESTONES = (1_000, 10_000, 100_000, 1_000_000, 10_000_000)
 FOLLOWER_MILESTONES = (100, 1_000, 10_000, 100_000, 1_000_000)
 HOT_WINDOW = 10 * 60  # "taking off": views gained in the last 10 minutes…
@@ -142,40 +143,61 @@ def ago(seconds: float) -> str:
     return f"{round(seconds / 86400)} days"
 
 
+def _kept(events: list[Event], now: float) -> list[Event]:
+    """The newest MAX_EVENTS events, and every one from today however many (today() adds them up)."""
+    i = max(0, len(events) - MAX_EVENTS)
+    start = day_start(now)
+    while i > 0 and events[i - 1].at >= start and len(events) - i < MAX_TODAY_EVENTS:
+        i -= 1
+    return events[i:]
+
+
 class EventLog:
     """The account's feed, kept as one JSON line per event."""
 
     def __init__(self, account_id: str, folder: Path | None = None):
-        self.path = (folder or app_dir() / "live") / f"{account_id}.jsonl"
+        self.path = self.path_for(account_id, folder)
         self.events: list[Event] = []
+        self._lines = 0  # lines in the file, so it's trimmed while the app runs too
         self.load()
 
-    def load(self) -> None:
+    @staticmethod
+    def path_for(account_id: str, folder: Path | None = None) -> Path:
+        return (folder or app_dir() / "live") / f"{account_id}.jsonl"
+
+    def load(self, now: float | None = None) -> None:
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            raw = self.path.read_text(encoding="utf-8")
         except (OSError, ValueError):
-            lines = []
-        out = []
-        for line in lines[-MAX_EVENTS:]:
+            raw = ""
+        lines = raw.splitlines()
+        out, torn = [], bool(raw) and not raw.endswith("\n")
+        for line in lines:
             try:
                 e = Event.from_json(json.loads(line))
             except ValueError:  # a line cut short by a crash
+                torn = True
                 continue
             if e:
                 out.append(e)
-        self.events = out
-        if len(lines) > MAX_EVENTS * 1.5:
-            self._rewrite()
+        self.events = _kept(out, time.time() if now is None else now)
+        self._lines = len(lines)
+        if torn or self._lines > len(self.events) + MAX_EVENTS // 2:
+            self._rewrite()  # without the torn line, so the next event isn't glued onto it
 
-    def add(self, events: list[Event]) -> None:
+    def add(self, events: list[Event], now: float | None = None) -> None:
         if not events:
             return
-        self.events = (self.events + events)[-MAX_EVENTS:]
+        self.events = _kept(self.events + events, time.time() if now is None else now)
+        if self._lines + len(events) > len(self.events) + MAX_EVENTS // 2:
+            self._rewrite()
+            return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
                 for e in events:
                     f.write(json.dumps(asdict(e), ensure_ascii=False) + "\n")
+            self._lines += len(events)
         except OSError:
             pass  # the feed still shows them; only the copy on disk is behind
 
@@ -185,13 +207,18 @@ class EventLog:
             tmp.write_text("".join(json.dumps(asdict(e), ensure_ascii=False) + "\n" for e in self.events),
                            encoding="utf-8")
             tmp.replace(self.path)
+            self._lines = len(self.events)
         except OSError:
             pass
 
     def clear(self) -> None:
         self.events = []
+        self.remove(self.path)
+
+    @staticmethod
+    def remove(path: Path) -> None:
         try:
-            self.path.unlink()
+            path.unlink()
         except OSError:
             pass
 
@@ -263,6 +290,8 @@ class Watcher:
         self.prev_at = 0.0
         self.prev: dict[str, tuple[int, int, int, int]] = {}  # video id -> views, likes, comments, shares
         self.prev_followers: int | None = None
+        self.best_followers = 0  # the most seen, so a count going back and forth over 1K is announced once
+        self.best_views: dict[str, int] = {}
         self.videos: dict[str, VideoLive] = {}
         self.last_full = 0.0
         self.last_ok = 0.0
@@ -315,11 +344,24 @@ class Watcher:
             self.prev = {v.id: (v.views, v.likes, v.comments, v.shares) for v in vids.values()}
             last = max((v.history[-1][0] for v in vids.values() if v.history), default=0.0)
             self.prev_at = max(last, p.fetched_at)
-            self.prev_followers = p.followers if p.fetched_at else None
+            self.prev_followers = p.followers if p.fetched_at and p.has_stats else None
+            self.best_followers = max(self.best_followers, self.prev_followers or 0)
+            for vid, numbers in self.prev.items():
+                self.best_views[vid] = max(self.best_views.get(vid, 0), numbers[0])
 
     def apply(self, store: Store, account: Account, s: Settings, r: Reading) -> list[Event]:
         """Take a reading in: events for the feed (already added to its log), stats saved to the store."""
         from .tiktok import compose_caption
+
+        theirs = r.profile.username.lstrip("@").lower()
+        if account.username and theirs and theirs != account.username.lstrip("@").lower():
+            # Connected to a different TikTok account: its numbers would land in this one's stats.
+            self.stopped = self.error = (f"the API connection is for @{r.profile.username}, not "
+                                         f"{account.handle}. Press Connect API on the Account page again, "
+                                         f"logged in as {account.handle}.")
+            events = [Event(at=r.at, kind="error", alert=True, text=f"Stopped watching: {self.stopped}")]
+            self.log.add(events)
+            return events
 
         first_of_run = not self.last_ok
         if first_of_run:
@@ -327,7 +369,7 @@ class Watcher:
         never_read = not self.prev and self.prev_followers is None
         since = self.prev_at
         gap = r.at - since if since else 0.0
-        away = bool(since) and gap > AWAY_AFTER
+        away = bool(since) and gap > max(AWAY_AFTER, 3 * max(MIN_INTERVAL, int(s.live_interval or 60)))
         self.failures, self.error, self.stopped = 0, "", ""
         self.last_ok = r.at
         if r.full:
@@ -338,9 +380,10 @@ class Watcher:
             items = {i.tiktok_id: i for i in store.items.values() if i.account == account.id and i.tiktok_id}
         events: list[Event] = []
         if never_read:
+            followers = f"{fmt(r.profile.followers)} followers, " if r.profile.has_stats else ""
             events.append(Event(at=r.at, kind="start", text=(
-                f"Watching {account.handle} live: {fmt(r.profile.followers)} followers, "
-                f"{len(r.videos)} videos read. Changes show up here from the next reading.")))
+                f"Watching {account.handle} live: {followers}{len(r.videos)} videos read. Changes show up "
+                "here from the next reading.")))
 
         # Videos that weren't on the account before: posted just now (by phone, or elsewhere)
         seen_events: list[Event] = []
@@ -376,10 +419,12 @@ class Watcher:
             d = (v.views - before[0], v.likes - before[1], v.comments - before[2], v.shares - before[3])
             if any(d):
                 moved.append((d[0], v, d))
+            best = max(before[0], self.best_views.get(v.id, 0))
             for m in VIEW_MILESTONES:
-                if before[0] < m <= v.views:
+                if best < m <= v.views:
                     events.append(Event(at=r.at, kind="milestone", video_id=v.id, alert=True, since=since,
                                         text=f"🏆 {video_name(v, items.get(v.id))} passed {fmt(m)} views."))
+            self.best_views[v.id] = max(best, v.views)
             hot = self._taking_off(v, live, r.at)
             if hot:
                 events.append(Event(at=r.at, kind="hot", video_id=v.id, alert=True, since=since, text=hot))
@@ -403,17 +448,19 @@ class Watcher:
                                     comments=total[2], shares=total[3],
                                     text=f"{changes(*total)} across {len(rest)} more videos"))
 
-        # Followers
-        f_now = r.profile.followers
-        if self.prev_followers is not None and f_now != self.prev_followers:
+        # Followers (not when the connection wasn't allowed to read them)
+        f_now = r.profile.followers if r.profile.has_stats else self.prev_followers
+        if f_now is not None and self.prev_followers is not None and f_now != self.prev_followers:
             d = f_now - self.prev_followers
             events.append(Event(at=r.at, kind="followers", followers=d, since=since,
                                 text=f"{changes(followers=d)} ({fmt(f_now)} now)"
                                 + (f" since {ago(gap)} ago" if away else "")))
             for m in FOLLOWER_MILESTONES:
-                if self.prev_followers < m <= f_now:
+                if max(self.prev_followers, self.best_followers) < m <= f_now:
                     events.append(Event(at=r.at, kind="milestone", alert=True, since=since,
                                         text=f"🏆 {account.handle} reached {fmt(m)} followers."))
+        if f_now is not None:
+            self.best_followers = max(self.best_followers, f_now)
 
         # Into the library, and remember this reading for the next one
         store.update_profile(account.id, r.profile, now=r.at, spacing=HISTORY_SPACING)
@@ -424,7 +471,7 @@ class Watcher:
             self.prev[v.id] = (v.views, v.likes, v.comments, v.shares)
         self.prev_followers = f_now
         self.prev_at = r.at
-        self.log.add(events)
+        self.log.add(events, now=r.at)
         return events
 
     @staticmethod

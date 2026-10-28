@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tokmanager import clipmonster, ready
+from tokmanager import clipmonster, ready, schedule
 from tokmanager.accounts import Accounts
 from tokmanager.config import Settings
 from tokmanager.store import Store
@@ -350,7 +350,6 @@ def test_series_parts_are_queued_in_order_one_after_another(tmp_path):
 
 
 def test_smart_order_keeps_a_series_together(tmp_path):
-    from tokmanager import schedule
     from tokmanager.store import VideoItem
 
     def item(score, group, series="", part=None):
@@ -396,3 +395,29 @@ def test_clips_cleaned_up_after_posting_cause_no_errors_or_reimport(tmp_path):
     again = Store(tmp_path / "lib.json")
     assert {i.id for i in again.posted(a.id)} == {first.id, second.id}
     assert ready.import_watched(again, [root]) == []
+
+
+def test_the_same_video_clipped_for_two_niches_makes_two_series(tmp_path):
+    for niche in ("Gaming", "Funny"):
+        niche_folder(tmp_path, "samevid", "", niche=niche, series=True)
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    assert len({i.series for i in items}) == 2
+    order = [(i.niche, i.part) for i in schedule.spread(items)]
+    first = order[0][0]
+    assert order[:3] == [(first, 1), (first, 2), (first, 3)]  # not 1, 1, 2, 2, 3, 3
+
+
+def test_later_parts_of_a_series_follow_part_1_to_its_account(tmp_path):
+    accs, a, b = two_accounts()
+    folder = niche_folder(tmp_path, "vid1", "", series=True)
+    data = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+    later = [c for c in data["clips"] if c["part"] != 1]
+    data["clips"] = [c for c in data["clips"] if c["part"] == 1]  # ClipMonster lists part 1 first
+    (folder / "clips.json").write_text(json.dumps(data), encoding="utf-8")
+    store = Store(tmp_path / "lib.json")
+    ready.assign(store, accs, ready.import_watched(store, [str(tmp_path / "Automation")]), "spread")
+    data["clips"] += later
+    (folder / "clips.json").write_text(json.dumps(data), encoding="utf-8")
+    ready.assign(store, accs, ready.import_watched(store, [str(tmp_path / "Automation")]), "spread")
+    assert len({i.account for i in store.items.values()}) == 1
