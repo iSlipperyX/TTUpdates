@@ -88,14 +88,28 @@ def by_score(items: list[VideoItem]) -> list[VideoItem]:
 
 
 def spread(items: list[VideoItem]) -> list[VideoItem]:
-    """Best-first, but never two clips from the same source video back to back when avoidable."""
-    pool = by_score(items)
+    """Best-first, but never two clips from the same source video back to back when avoidable.
+
+    The parts of a series stay together, in part order, placed by their best part's score: each
+    part ends with "follow for part 2", so they're meant to go up one after another.
+    """
+    blocks: dict[str, list[VideoItem]] = {}
+    for it in items:
+        blocks.setdefault(it.series or f"\0{it.id}", []).append(it)
+    for b in blocks.values():
+        b.sort(key=lambda i: i.part or 0)
+
+    def best(b: list[VideoItem]) -> tuple[bool, float]:
+        scores = [i.total for i in b if i.total is not None]
+        return (not scores, -max(scores) if scores else 0.0)
+
+    pool = sorted(blocks.values(), key=best)
     out: list[VideoItem] = []
     while pool:
         last = out[-1].source_group if out else None
-        pick = next((i for i in pool if not last or i.source_group != last), pool[0])
+        pick = next((b for b in pool if not last or b[0].source_group != last), pool[0])
         pool.remove(pick)
-        out.append(pick)
+        out += pick
     return out
 
 

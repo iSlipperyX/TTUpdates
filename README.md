@@ -16,7 +16,8 @@ want to post. Skip it if you like; **Settings → Ready to upload → Run first-
 Run several TikTok accounts from one install. The **account button** at the top left shows which
 account the window is on; click it (or press **Ctrl+1…9**) to switch, or to add one.
 
-- Each account has its **own TikTok login** (its own browser profile, or its own API connection),
+- Each account has its **own TikTok login** (its own browser profile, plus its own official API
+  connection if you set one up), its **own way of posting** (browser, API, or API to TikTok's inbox),
   its **own queue and schedule**, its own **posting mode** (by hand or autopilot), its own **stats and post history**, and
   its own posting defaults: who can watch, hashtags added to every post, and the niche the AI writes
   captions for (**Manage accounts**).
@@ -74,7 +75,16 @@ last clicked or tabbed into, or moved to with ↓ / ↑.
 | Enter | mark as posted (the next video takes over) |
 | Ctrl+Z | undo the last "mark as posted" (while its **Undo** button shows) |
 
-**Account**: log the shown account in, then see followers, likes, every video's views, likes, comments, shares and
+**Live**: what's happening on the shown account right now, read from TikTok's official API every
+minute (or every 30 s to 10 min). Today's new views, likes, comments, shares and followers, your
+latest videos with their views in the last hour and a small trend line, and an activity feed:
+"+250 views on …", new followers, milestones (1K, 10K…), a video taking off, and **a video you
+posted from your phone**, which is matched to its clip in the queue and marked as posted by itself.
+Notifications for new posts, milestones and videos taking off are on by default (**Settings → TikTok
+API**). **Watch live** turns it off per account. Until the account is connected, the page shows
+the two setup steps (see [Live stats with the official TikTok API](#live-stats-with-the-official-tiktok-api)).
+
+**Account**: log the shown account in (and **Connect API** for live stats), then see followers, likes, every video's views, likes, comments, shares and
 engagement, plus the change since the last refresh. "Posted from this app" is the history of
 everything the app posted or tried to post. Once a few posts have stats, the page tells you whether
 high-scoring videos really do get more views on *your* account.
@@ -93,6 +103,12 @@ waiting), or all queued for one account.
   on the Ready page, and **Creative Commons** clips get a credit line (`🎥 Channel on YouTube (CC BY)`)
   in their caption, which the licence requires. Tick **Write an AI caption** to have Claude write
   one for each new clip instead.
+- **Niches.** A clip from a ClipMonster niche whose account name matches one of your accounts'
+  usernames (with or without the @) is queued for that account, whatever the sharing rule says.
+- **Part series.** ClipMonster's "Part 1 / 2 / 3" clips stay in order, and back to back, in the queue
+  and on the Ready page, which shows "Part 2 of 3" on each.
+- ClipMonster's **Clean up** may delete clips you've already posted. Their stats and history are
+  kept, they aren't brought in again, and the Library just says the file was deleted after posting.
 - For accounts you post to by hand, a **reminder** pops up when a video's posting time comes round, and a
   **morning summary** says what's ready for each account.
 - **ClipMonster learns from your results.** After each stats refresh, the views of ClipMonster clips
@@ -134,18 +150,39 @@ With more than one account, each gets its own subfolder.
 
 Weights are adjustable in **Settings → Scoring**.
 
-## Posting: two methods
+## Posting: browser or official API
 
-**Browser (default, recommended).** The app opens TikTok Studio in your own Microsoft Edge (or Chrome)
-using a separate browser profile, uploads the file, types the caption and hashtags, sets "who can
-watch" and comment/duet/stitch, and clicks Post. You log in yourself once per account (**Account → Log in**
-opens a normal Edge window; it closes by itself once you're logged in); the app never sees your password. Leave **Show the browser window** on: TikTok is less likely to block a
-visible browser, and you can solve a captcha if one appears.
+Each account picks how it posts in **Manage accounts → Post with**:
 
-**Official TikTok API (optional).** For people with their own app at developers.tiktok.com. Paste the
-client key and secret in **Settings → TikTok API** and register the redirect URI shown there. Until TikTok
-audits your app, it can only post "Only me" videos to a **private** account. That's TikTok's rule, so most
-people should use the browser method.
+- **Browser (default).** The app opens TikTok Studio in your own Microsoft Edge (or Chrome) using a
+  separate browser profile, uploads the file, types the caption and hashtags, sets "who can watch" and
+  comment/duet/stitch, and clicks Post. You log in yourself once per account (**Account → Log in** opens
+  a normal Edge window; it closes by itself once you're logged in); the app never sees your password.
+  Leave **Show the browser window** on: TikTok is less likely to block a visible browser, and you can
+  solve a captcha if one appears.
+- **Official TikTok API.** Posts through your own developer app (below). Until TikTok audits the app,
+  TikTok only allows "Only me" posts to a **private** account, so this is mainly for audited apps.
+- **API, to TikTok's inbox.** Sends the video to the TikTok app's inbox as a draft; you finish and post
+  it on your phone. This works without an audit.
+
+## Live stats with the official TikTok API
+
+The Live page and the per-account **Connect API** use a free developer app of your own at
+developers.tiktok.com. **Settings → TikTok API** walks you through making it (about 10 minutes):
+
+1. Log in at developers.tiktok.com, then **Manage apps → Connect an app**, with your own account as owner.
+2. Switch the app to **Sandbox** and create one. A sandbox works for your own accounts without app review.
+3. In App details add an icon, category and description, and tick **Desktop**.
+4. **Add products**: Login Kit and Display API (plus Content Posting API to post with it). In Login Kit
+   add the Desktop redirect URI `http://localhost:53682/callback/`.
+5. Under **Scopes**, add the permissions Settings lists, then **Apply changes**.
+6. **Sandbox settings → Target users → Add account** for each TikTok account (a sandbox allows 10).
+7. Copy the **Client key** and **Client secret** into Settings and Save, then press **Connect API** on
+   the Account page and approve TikTok Manager. The connection lasts a year.
+
+Once connected, stats refreshes use the API too (they fall back to the browser if the API is down), and
+the Account page shows how long the connection has left. TikTok's API only lists **public** videos and
+doesn't give comment text, so private and "Only me" videos don't show up on the Live page.
 
 ## Autopilot
 
@@ -166,7 +203,8 @@ can run at a time, so nothing gets posted twice.
 - Automating TikTok's website is against the spirit of its terms. Keep the pace human (the default
   is 3 posts a day, 2 hours apart).
 - Your data: `%APPDATA%\TikTokManager` (library, settings, `accounts.json`; API keys and tokens are
-  encrypted with your Windows login, one tokens file per account under `tokens\`) and
+  encrypted with your Windows login, one tokens file per account under `tokens\`; the Live page's
+  activity under `live\`) and
   `%LOCALAPPDATA%\TikTokManager` (thumbnails, logs, and each account's browser profile with its TikTok
   login under `browser-profiles\`; an account carried over from 1.0 keeps using `browser-profile`).
 - Every save keeps the previous file as `.bak`, plus a daily copy in `backups\` (the last 7 days). If

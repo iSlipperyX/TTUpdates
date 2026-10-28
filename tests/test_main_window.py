@@ -54,13 +54,15 @@ def window(app):
 
     yield make
     for w in made:
-        for timer in (w.autopilot_timer, w.watch_timer, w.update_timer, w.clock, w.phone_timer, w.phone_soon):
+        for timer in (w.autopilot_timer, w.watch_timer, w.update_timer, w.clock, w.phone_timer, w.phone_soon,
+                      w.live_monitor.timer, w.live.clock):
             timer.stop()
         if w._setup is not None:
             w._setup.close()
         w.hide()
         w.state.cancel_all()
         w.state.analysis_pool.waitForDone(5000)
+        w.state.live_pool.waitForDone(5000)
         w.deleteLater()
     QApplication.processEvents()
 
@@ -123,3 +125,24 @@ def test_closing_setup_while_logging_in_lets_the_login_finish(window, monkeypatc
     assert w._setup is None and login.isVisible()
     runs[0]["on_success"](None)  # then the login finishes
     assert not login.isVisible() and w.state.settings.setup_done
+
+
+def test_the_live_page_sits_between_queue_and_account(window):
+    w = window()
+    names = [b.text() for b in w.nav_buttons]
+    assert names == ["Library", "Ready", "Queue", "Live", "Account"]
+    w.show_page(w.account)
+    assert w.stack.currentWidget() is w.account
+    w.account.live_requested.emit()
+    assert w.stack.currentWidget() is w.live
+
+
+def test_connect_api_without_a_developer_app_offers_the_setup(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    w = window()
+    asked, opened = [], []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.Yes)
+    monkeypatch.setattr(w, "open_settings", lambda tab="": opened.append(tab))
+    w.connect_api()
+    assert "developer app" in asked[0] and opened == ["TikTok API"]

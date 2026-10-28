@@ -138,6 +138,20 @@ def unqueued_watched(store: Store) -> list[VideoItem]:
                 if i.imported_by == "watch" and i.status == "new" and not i.account and i.exists()]
 
 
+def series_order(items: list[VideoItem]) -> list[VideoItem]:
+    """`items` in the same order, except that the parts of a series come together, part 1 first
+    (where the first of them was), so they're queued to post one after another."""
+    out: list[VideoItem] = []
+    done: set[str] = set()
+    for it in items:
+        if it.id in done:
+            continue
+        group = sorted((i for i in items if i.series == it.series), key=lambda i: i.part or 0) if it.series else [it]
+        out += group
+        done.update(i.id for i in group)
+    return out
+
+
 def niche_account(accounts: Accounts | list[Account], item: VideoItem) -> Account | None:
     """The account ClipMonster made the clip for: its niche names a TikTok @username (clips.json
     "automation" → "account"), matched to an account's username without caring about case or "@"."""
@@ -160,16 +174,19 @@ def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoIt
         return got
     fixed = next((a for a in accounts if a.id == target), None)
     waiting = {a.id: sum(1 for i in store.queue(a.id) if i.status == "queued") for a in accounts}
-    for it in items:
+    series_to: dict[str, str] = {}  # the parts of a series all go to the account part 1 went to
+    for it in series_order(items):
         owner = niche_account(accounts, it)
         if owner is not None:
             aid = owner.id
         elif fixed is not None:
             aid = fixed.id
         elif target == "spread":
-            aid = min(accounts, key=lambda a: waiting[a.id]).id
+            aid = series_to.get(it.series) or min(accounts, key=lambda a: waiting[a.id]).id
         else:  # "library", or an account that has since been removed
             continue
+        if it.series:
+            series_to.setdefault(it.series, aid)
         store.enqueue([it.id], aid)
         waiting[aid] += 1
         got[aid] = got.get(aid, 0) + 1

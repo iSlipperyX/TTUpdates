@@ -84,7 +84,7 @@ class QueueDelegate(QStyledItemDelegate):
         p.setPen(QColor(theme.MUTED))
         caption = " ".join(item.caption.split())
         extra = caption if caption and caption != item.headline else Path(item.path).name  # not the title twice
-        sub = f"{fmt_dur(item.duration)}  ·  {extra[:120]}"
+        sub = f"{fmt_dur(item.duration)}  ·  " + (f"{item.part_label}  ·  " if item.part_label else "") + extra[:120]
         p.drawText(QRectF(x, r.y() + 48, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(sub, Qt.ElideRight, text_w))
 

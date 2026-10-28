@@ -43,6 +43,11 @@ class VideoItem:
     niche: str = ""  # the niche's name, e.g. "Gaming"
     niche_id: str = ""  # stable across renames; shared back in results.json
     for_account: str = ""  # the TikTok @username the niche is for ("" = none named)
+    # ClipMonster 2.4+ part series: one moment cut into parts, each but the last saying "follow for part 2".
+    # `series` is unique across the library (ClipMonster's id is only unique within one video's folder).
+    series: str = ""
+    part: int | None = None  # 1-based
+    parts: int | None = None  # how many parts ClipMonster kept
     reminded_at: float | None = None  # when the "time to post" reminder went out
     # Analysis + score
     info: dict = field(default_factory=dict)
@@ -91,6 +96,13 @@ class VideoItem:
         """What to call the clip where you pick and post it: ClipMonster's hook when it wrote one
         (rather than a file name like "01 - 1-37 - clip"), else the title."""
         return " ".join(self.hook.split()) or self.name
+
+    @property
+    def part_label(self) -> str:
+        """'Part 2 of 3' for a clip in a part series, else ""."""
+        if not self.series or not self.part:
+            return ""
+        return f"Part {self.part} of {self.parts}" if self.parts else f"Part {self.part}"
 
     def exists(self) -> bool:
         return Path(self.path).is_file()
@@ -305,6 +317,9 @@ class Store:
                     item.niche = meta.get("niche", "")
                     item.niche_id = meta.get("niche_id", "")
                     item.for_account = meta.get("account", "")
+                    if meta.get("series"):
+                        item.series = f"{item.source_group}#{meta['series']}"
+                        item.part, item.parts = meta.get("part"), meta.get("parts")
                     if needs_credit(meta):
                         item.credit = credit_line(item.source_channel)
                 else:

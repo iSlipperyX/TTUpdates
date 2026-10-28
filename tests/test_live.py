@@ -302,7 +302,7 @@ def test_errors_back_off_and_a_lost_connection_stops_until_resumed(tmp_path):
     s = settings(live_interval=60)
     now = 1_000_000.0
     ev = w.failed(s, "TikTok returned HTTP 503", "", now)
-    assert w.next_at == now + 120 and len(ev) == 1 and "Trying again in 120 s" in ev[0].text
+    assert w.next_at == now + 120 and len(ev) == 1 and "Trying again in 2 min" in ev[0].text
     assert w.failed(s, "again", "", now) == []  # not every failure fills the feed
     assert w.next_at == now + 240
     for _ in range(10):

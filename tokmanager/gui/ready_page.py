@@ -78,7 +78,8 @@ class ReadyCard(QFrame):
         body = QVBoxLayout()
         body.setSpacing(6)
         head = QHBoxLayout()
-        self.title = label(f"{position}. {_esc(item.headline)}", "h2", wrap=True)
+        part = f" <span style='color:{theme.ACCENT_2}'>· {item.part_label}</span>" if item.part_label else ""
+        self.title = label(f"{position}. {_esc(item.headline)}{part}", "h2", wrap=True)
         self.title.setTextFormat(Qt.RichText)
         self.title.setToolTip(Path(item.path).name)
         head.addWidget(self.title, 1)

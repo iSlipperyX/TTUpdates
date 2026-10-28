@@ -13,6 +13,7 @@ import hashlib
 import http.server
 import json
 import math
+import os
 import secrets
 import threading
 import time
@@ -116,7 +117,18 @@ class Tokens:
         d = asdict(self)
         d["access_token"], d["refresh_token"] = protect(self.access_token), protect(self.refresh_token)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        # Whole or not at all: another thread (the live view, a post) may be reading it right now
+        tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:  # Windows: being read this instant
+                if attempt == 9:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.05)
 
     @staticmethod
     def clear(path: Path) -> None:
