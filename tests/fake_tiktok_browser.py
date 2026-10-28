@@ -22,6 +22,8 @@ class FakeTikTok:
         self.videos: list[TikTokVideo] = []
         self.fail_with: Exception | None = None
         self.withhold_videos = False
+        self.grid_only = False  # videos as read off the grid: link and views only
+        self.session = True  # the profile still has its TikTok login
         self.opened: list[dict] = []  # one per browser opening: profile folder, headless, max_videos
         self.lock = threading.Lock()
 
@@ -64,12 +66,18 @@ class FakeTikTok:
                 return False
 
             def require_login(self):
-                pass
+                if not fake.session:
+                    raise browser.BrowserError("Not logged in to TikTok. Use Account → Log in first.")
 
-            def fetch_account(self, username, max_videos=120):
+            def logged_in(self):
+                return fake.session
+
+            def fetch_account(self, username, max_videos=120, captcha_wait=None):
                 with fake.lock:
-                    fake.opened.append({**self.entry, "max_videos": max_videos})
+                    fake.opened.append({**self.entry, "max_videos": max_videos, "captcha_wait": captcha_wait})
                     vids = [] if fake.withhold_videos else [TikTokVideo(**{**v.__dict__}) for v in fake.videos]
+                    if fake.grid_only:
+                        vids = [TikTokVideo(id=v.id, description=v.description, views=v.views, url=v.url) for v in vids]
                     p = Profile(username=fake.username, nickname="Cats", followers=fake.followers, likes=fake.likes,
                                 video_count=len(fake.videos), fetched_at=time.time())
                 return p, vids[:max_videos]

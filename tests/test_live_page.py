@@ -264,3 +264,63 @@ def test_settings_live_tab(app):
     dlg.live_show.setChecked(True)
     dlg.apply()
     assert (s.live_interval, s.live_show_browser) == (900, True)
+
+
+def test_a_queued_reading_shows_as_waiting_until_it_starts(made, fake):
+    from tokmanager.gui.state import Job
+
+    st = made()
+    mon, page = page_for(st)
+    j = Job("Reading", lambda j: None, kind="live")
+    j.account_id = st.active.id
+    st.jobs.append(j)
+    assert mon.status(st.active).state == "waiting"
+    j.started = True
+    assert mon.status(st.active).state == "reading"
+    st.jobs.remove(j)
+
+
+def test_watched_accounts_are_read_one_at_a_time(made, fake):
+    st = made()
+    b = st.accounts.add("")
+    b.username, b.logged_in = "dogs", True
+    mon, page = page_for(st)
+    mon.tick()
+    assert sum(j.kind == "live" for j in st.jobs) == 1
+    assert wait_for(lambda: not st.jobs)
+    mon.tick()
+    assert wait_for(lambda: fake.readings() == 2)
+    dirs = {o["profile_dir"] for o in fake.opened}
+    assert dirs == {st.active.browser_dir(), b.browser_dir()}
+
+
+def test_a_login_that_ran_out_is_noticed_and_said(made, fake):
+    st = made()
+    mon, page = page_for(st)
+    fake.session = False
+    lines = []
+    st.message.connect(lines.append)
+    mon.check_now(st.active.id)
+    assert wait_for(lambda: mon.watcher(st.active.id).last_ok)
+    assert not st.active.logged_in and any("login has run out" in m for m in lines)
+    assert mon.status(st.active).state == "live"  # still read through the public profile
+
+
+def test_removing_an_account_cancels_its_reading_and_deletes_its_profile_after(made, fake, monkeypatch):
+    from tokmanager.accounts import Accounts
+    from tokmanager.gui.state import Job
+
+    st = made()
+    b = st.accounts.add("")
+    b.username, b.logged_in = "dogs", True
+    deleted = []
+    monkeypatch.setattr(Accounts, "delete_login", staticmethod(lambda a: deleted.append(a.id)))
+    mon, page = page_for(st)
+    blocker = Job("Posting", lambda j: time.sleep(0.4), kind="post")  # keeps the tiktok pool busy
+    st.run(blocker, pool="tiktok", quiet=True)
+    mon.check_now(b.id)
+    st.remove_account(b.id)
+    QTest.qWait(100)
+    assert not deleted  # the reading hasn't let go of the profile yet
+    assert wait_for(lambda: deleted == [b.id])
+    assert all(o["profile_dir"] != b.browser_dir() for o in fake.opened)  # the queued reading never opened it

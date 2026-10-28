@@ -475,6 +475,11 @@ class Store:
                 if old:
                     v.history = old.history
                     v.saves = v.saves or old.saves  # a reading without saves keeps the last ones
+                    if not v.create_time and old.create_time:  # read off the grid: only views (rounded) and a link
+                        v.create_time, v.likes, v.comments, v.shares = (old.create_time, old.likes, old.comments,
+                                                                        old.shares)
+                        v.cover, v.duration = v.cover or old.cover, v.duration or old.duration
+                        v.description = old.description or v.description
                 v.history = _add_point(v.history, [now, v.views, v.likes, v.comments, v.shares], spacing)[-60:]
                 known[v.id] = v
             self.link_posts(account)

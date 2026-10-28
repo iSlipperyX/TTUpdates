@@ -38,3 +38,22 @@ def test_navigator_webdriver_reads_like_a_normal_browser(tmp_path):
         assert page.evaluate("navigator.webdriver") is False
         assert page.evaluate("'webdriver' in navigator") is True  # present, as in a normal browser
         ctx.close()
+
+
+def test_a_hidden_window_stops_at_a_captcha_instead_of_waiting(tmp_path, monkeypatch):
+    pytest.importorskip("playwright.sync_api")
+    exe = os.environ.get("TOKMANAGER_TEST_CHROMIUM")
+    if not exe:
+        pytest.skip("set TOKMANAGER_TEST_CHROMIUM to a Chromium for Playwright")
+    b = browser.TikTokBrowser(Settings(), tmp_path / "p", log=lambda m: None, headless=True)
+    opts = b.launch_options()
+    opts.pop("channel")
+    monkeypatch.setattr(b, "launch_options", lambda: {**opts, "executable_path": exe})
+    with b:
+        b.page.set_content("<p>profile</p>")
+        assert not b._captcha_showing()
+        b._wait_for_captcha(5)  # nothing to wait for
+        b.page.set_content("<div id='captcha_container' style='width:200px;height:200px'>slide</div>")
+        assert b._captcha_showing()
+        with pytest.raises(browser.BrowserError, match="captcha"):
+            b._wait_for_captcha(5)

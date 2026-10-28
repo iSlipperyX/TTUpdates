@@ -126,8 +126,8 @@ class Settings:
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
         if "setup_done" not in data:  # saved by a version before first-run setup: not a new install
             s.setup_done = True
-        if "api_client_key" in data:  # 1.5.0 read the official API every minute; the browser is slower
-            s.live_interval = max(s.live_interval, 300)
+        if "api_client_key" in data and s.live_interval < 120:  # 1.5.0 read its API every minute or faster
+            s.live_interval = 300
         if isinstance(s.watch_folders, str):  # hand-edited, or a single folder written as text
             s.watch_folders = [s.watch_folders]
         s.watch_folders = [str(f) for f in s.watch_folders or [] if f]

@@ -60,7 +60,8 @@ SERIES_SECONDS = 3 * 3600  # per-video readings kept in memory (for "taking off"
 SEEN_WITHIN = 2 * 86400  # a queued clip is only matched to videos posted in the last two days
 
 # Error codes after which reading stops until the account is logged in (or set up) again
-STOP_CODES = ("no_user", "no_browser")
+STOP_CODES = ("no_user", "no_browser", "logged_out")
+CAPTCHA_WAIT = 90  # with the window shown, how long a reading waits for a captcha to be solved
 
 
 class LiveError(Exception):
@@ -104,6 +105,7 @@ class Reading:
     profile: Profile
     videos: list[TikTokVideo]
     full: bool = False  # all its videos were read, not only the newest
+    logged_in: bool | None = None  # the browser profile still had its TikTok login (None: not known)
 
 
 def read(s: Settings, account: Account, full: bool = False, log: Callable[[str], None] = lambda _m: None,
@@ -115,9 +117,10 @@ def read(s: Settings, account: Account, full: bool = False, log: Callable[[str],
     if not account.username and not account.logged_in:
         raise LiveError(f"{account.label} isn't logged in, so there's no profile to read. Log in on the "
                         "Account page.", "no_user")
+    session: dict = {}
     try:
         profile, videos = refresh_account(s, account, log, cancelled, max_videos=ALL_VIDEOS if full else RECENT_VIDEOS,
-                                          headless=not s.live_show_browser)
+                                          headless=not s.live_show_browser, captcha_wait=CAPTCHA_WAIT, session=session)
     except Cancelled:
         raise LiveError("Cancelled.", "cancelled") from None
     except BrowserError as exc:
@@ -127,7 +130,13 @@ def read(s: Settings, account: Account, full: bool = False, log: Callable[[str],
                             "busy") from None
         if "Couldn't find" in text:
             raise LiveError(text, "no_browser") from None
+        if text.startswith("Not logged in"):
+            raise LiveError(f"{account.label}'s TikTok login has run out. Log in again on the Account page.",
+                            "logged_out") from None
         if "captcha" in text.lower():
+            if s.live_show_browser:
+                raise LiveError("TikTok asked for a captcha and it wasn't solved. The next reading shows it again.",
+                                "captcha") from None
             raise LiveError("TikTok is asking for a captcha. Turn on 'Show the browser while reading' in Settings → "
                             "Live and solve it in the window that opens at the next reading.", "captcha") from None
         if "Couldn't tell which account" in text:
@@ -137,10 +146,14 @@ def read(s: Settings, account: Account, full: bool = False, log: Callable[[str],
         name = type(exc).__name__
         raise LiveError("TikTok's page didn't load in time." if "Timeout" in name else
                         f"The browser couldn't read TikTok ({name}).", "page") from None
+    if videos and not any(v.create_time for v in videos):
+        # Only the grid's links and rounded view counts, without likes, comments or dates: taking it in
+        # would read as every number dropping, then jumping back at the next full reading.
+        videos = []
     if not videos and profile.video_count:
         raise LiveError("TikTok sent the profile but not its videos (it may want a captcha). Turn on "
                         "'Show the browser while reading' in Settings → Live if this keeps happening.", "no_videos")
-    return Reading(at=now(), profile=profile, videos=videos, full=full)
+    return Reading(at=now(), profile=profile, videos=videos, full=full, logged_in=session.get("logged_in"))
 
 
 def fmt(n: int) -> str:

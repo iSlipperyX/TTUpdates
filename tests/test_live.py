@@ -510,3 +510,65 @@ def test_views_lately_is_never_just_a_minute_of_change(tmp_path):
         st.update_tiktok_videos("A", [TikTokVideo(id="v", views=i * 100)], now=t + i * 60, spacing=1800)
     v = st.videos("A")["v"]
     assert len(v.history) == 3 and v.views_change() == 3100  # since the point half an hour back, not +100
+
+
+# --- found in the 1.5.1 review --------------------------------------------------------------
+
+
+def test_a_grid_only_reading_doesnt_count_as_every_number_dropping(fake, tmp_path):
+    a, st, w = _watch(tmp_path)
+    s = settings()
+    fake.add_video("v1", "a cat", views=1234, likes=80, comments=5)
+    w.apply(st, a, s, live.read(s, a))
+    fake.grid_only = True
+    with pytest.raises(live.LiveError) as e:
+        live.read(s, a)
+    assert e.value.code == "no_videos"
+    v = st.videos(a.id)["v1"]
+    assert (v.views, v.likes, v.comments) == (1234, 80, 5) and v.create_time
+
+
+def test_a_grid_refresh_keeps_what_only_the_full_reading_has(tmp_path):
+    st = Store(tmp_path / "lib.json")
+    st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=1234, likes=80, comments=5, create_time=1e9, cover="c")])
+    st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=1200)])  # off the grid: "1.2K", nothing else
+    v = st.videos("A")["v1"]
+    assert (v.views, v.likes, v.comments, v.create_time, v.cover) == (1200, 80, 5, 1e9, "c")
+
+
+def test_a_login_that_ran_out_stops_an_account_without_a_username(fake):
+    a = connected_account(username="")
+    fake.session = False
+    with pytest.raises(live.LiveError) as e:
+        live.read(settings(), a)
+    assert e.value.code == "logged_out" and e.value.code in live.STOP_CODES and "Log in again" in str(e.value)
+
+
+def test_a_reading_says_whether_the_login_is_still_there(fake):
+    a = connected_account()
+    fake.add_video("v1", "a cat")
+    assert live.read(settings(), a).logged_in is True
+    fake.session = False  # the @username is known: the public profile is still read
+    r = live.read(settings(), a)
+    assert r.logged_in is False and r.videos
+
+
+def test_live_readings_dont_read_past_a_captcha(fake):
+    a = connected_account()
+    fake.add_video("v1", "a cat")
+    live.read(settings(), a)
+    assert fake.opened[-1]["captcha_wait"] == live.CAPTCHA_WAIT
+    fake.fail_with = BrowserError("TikTok's captcha wasn't solved in time.")
+    with pytest.raises(live.LiveError) as e:
+        live.read(settings(live_show_browser=True), a)
+    assert e.value.code == "captcha" and "next reading" in str(e.value)
+
+
+@pytest.mark.parametrize("saved,loaded", [(30, 300), (60, 300), (120, 120), (600, 600)])
+def test_only_a_1_5_0_interval_under_2_min_is_raised(saved, loaded):
+    Settings().save()
+    path = Settings.path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(api_client_key="", live_interval=saved)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert Settings.load().live_interval == loaded

@@ -37,6 +37,7 @@ class Job(QRunnable):
         self.fn = fn
         self.signals = JobSignals()
         self._cancel = False
+        self.started = False  # it left the pool's queue and is running
         self.account_id = ""  # the TikTok account this job works for, if any
 
     def cancel(self) -> None:
@@ -52,6 +53,7 @@ class Job(QRunnable):
         self.signals.progress.emit(msg)
 
     def run(self) -> None:
+        self.started = True
         try:
             self.signals.succeeded.emit(self.fn(self))
         except Exception as exc:
@@ -164,8 +166,20 @@ class AppState(QObject):
         from ..live import EventLog
 
         EventLog.remove(EventLog.path_for(a.id))  # its live activity feed
-        # A browser profile can be a few hundred MB; delete it without freezing the window.
-        threading.Thread(target=Accounts.delete_login, args=(a,), daemon=True).start()
+        # A browser profile can be a few hundred MB; delete it without freezing the window. A live
+        # reading that's queued or running is cancelled first: Edge holds the profile's files while it
+        # runs, and a reading that started after the delete would make the folder again.
+        reading = [j for j in self.jobs if j.account_id == a.id and j.kind == "live"]
+        for j in reading:
+            j.cancel()
+
+        def delete() -> None:
+            threading.Thread(target=Accounts.delete_login, args=(a,), daemon=True).start()
+
+        if reading:
+            reading[-1].signals.done.connect(delete)
+        else:
+            delete()
         self.log(f"Removed {a.label}.")
         if was_shown:
             self.account_switched.emit()

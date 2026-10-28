@@ -61,14 +61,22 @@ def post(item: VideoItem, s: Settings, account: Account, log: Callable[[str], No
 
 
 def refresh_account(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
-                    max_videos: int = 120, headless: bool | None = None) -> tuple[Profile, list[TikTokVideo]]:
-    """The account's profile numbers and videos, read from its TikTok profile page in its browser."""
+                    max_videos: int = 120, headless: bool | None = None, captcha_wait: float | None = None,
+                    session: dict | None = None) -> tuple[Profile, list[TikTokVideo]]:
+    """The account's profile numbers and videos, read from its TikTok profile page in its browser.
+
+    `captcha_wait` (the live view): stop on a captcha if hidden, or wait that long for it to be solved.
+    `session`, if given, gets "logged_in": whether the profile still had its TikTok login.
+    """
     from .browser import TikTokBrowser
 
     with TikTokBrowser(s, account.browser_dir(), log, headless=headless, cancelled=cancelled) as b:
         if not account.username:  # public profiles can be read logged out; finding "me" needs the login
             b.require_login()
-        return b.fetch_account(account.username, max_videos=max_videos)
+        out = b.fetch_account(account.username, max_videos=max_videos, captcha_wait=captcha_wait)
+        if session is not None:
+            session["logged_in"] = b.logged_in()
+        return out
 
 
 def check_upload(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],

@@ -60,7 +60,11 @@ class LiveMonitor(QObject):
         return a.live and self.can_watch(a)
 
     def reading(self, account_id: str) -> bool:
+        """A reading of this account is queued or running."""
         return any(j.kind == "live" and j.account_id == account_id for j in self.state.jobs)
+
+    def _reading_started(self, account_id: str) -> bool:
+        return any(j.kind == "live" and j.account_id == account_id and j.started for j in self.state.jobs)
 
     def status(self, a: Account, now: float | None = None) -> Status:
         now = time.time() if now is None else now
@@ -71,9 +75,9 @@ class LiveMonitor(QObject):
         w = self.watcher(a.id)
         if w.stopped:
             return Status("stopped", f"Stopped: {w.stopped}")
-        if self.reading(a.id):
+        if self._reading_started(a.id):
             return Status("reading", "Reading TikTok…")
-        if self.state.account_busy(a.id, self.BROWSER_JOBS) and now >= w.next_at:
+        if self.reading(a.id) or (self.state.account_busy(a.id, self.BROWSER_JOBS) and now >= w.next_at):
             return Status("waiting", "Waiting for the browser (a post or other TikTok job is running)…")
         if not w.last_ok:
             if w.error:
@@ -91,6 +95,8 @@ class LiveMonitor(QObject):
         known = set(self.state.accounts.ids())
         for aid in [a for a in self.watchers if a not in known]:  # removed accounts
             del self.watchers[aid]
+        if any(j.kind == "live" for j in self.state.jobs):
+            return  # one reading in the browser queue at a time, so a post that comes due waits for one at most
         for a in self.state.accounts:
             w = self.watcher(a.id)
             if not a.live or w.stopped or now < w.next_at or self.reading(a.id):
@@ -98,6 +104,7 @@ class LiveMonitor(QObject):
             if not self.can_watch(a) or self.state.account_busy(a.id, self.BROWSER_JOBS):
                 continue  # its browser profile is in use: read after that job
             self._read(a, w, now)
+            return
 
     def check_now(self, account_id: str) -> None:
         a = self.state.accounts.get(account_id)
@@ -132,6 +139,8 @@ class LiveMonitor(QObject):
         w.schedule(s, now)  # the next one is planned from the start, so a slow answer doesn't push it back
 
         def work(j: Job):
+            if j.cancelled() or st.accounts.get(a.id) is None:  # removed while it waited
+                return Failure("Cancelled.", "cancelled")
             try:
                 return live.read(s, a, full=full, log=lambda _m: None, cancelled=j.cancelled)
             except live.LiveError as exc:
@@ -147,12 +156,16 @@ class LiveMonitor(QObject):
                 if result.code == "cancelled":  # the app is closing
                     return
                 events = w.failed(s, result.message, result.code, time.time())
+                if result.code == "logged_out" and account.logged_in:
+                    self._logged_out(account)
                 if w.failures == 1 or w.stopped:
                     st.log(f"Live view of {account.handle}: {result.message}")
                 for e in events:
                     if e.alert and s.live_alerts:
                         self.alert.emit(f"Live view of {account.handle} stopped", result.message)
             else:
+                if result.logged_in is False and account.logged_in:  # read as a visitor: the login ran out
+                    self._logged_out(account)
                 had_name = account.username
                 events = w.apply(st.store, account, s, result)
                 if account.username != had_name:
@@ -167,6 +180,8 @@ class LiveMonitor(QObject):
                 if s.live_alerts:
                     self._notify(account, [e for e in events if e.alert])
                 self._share(any(e.kind == "seen" for e in events))
+                if w.next_at < time.time():  # it waited or took longer than the interval: plan from now
+                    w.schedule(s, time.time())
             self.updated.emit(account.id)
 
         def crashed(msg: str) -> None:
@@ -181,6 +196,13 @@ class LiveMonitor(QObject):
         st.run(job, pool="tiktok", on_success=done, on_failure=crashed, quiet=True)
         self.updated.emit(a.id)
 
+
+    def _logged_out(self, a: Account) -> None:
+        a.logged_in = False
+        self.state.save_accounts()
+        self.state.log(f"{a.label}'s TikTok login has run out. Log in again on the Account page"
+                       + (" (the Live page keeps reading its public profile meanwhile)." if a.username else "."))
+        self.state.account_changed.emit()
 
     def _notify(self, a: Account, events: list[live.Event]) -> None:
         """One notification per reading: after a night away, ten milestones are one message, not ten."""
