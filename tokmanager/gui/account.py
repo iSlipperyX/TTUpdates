@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
                                QPushButton, QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import results
+from .. import niches, results
 from ..store import VideoItem
 from . import theme
 from .library import SortItem
@@ -111,7 +111,7 @@ class AccountPage(QWidget):
         self.insight.setTextFormat(Qt.RichText)
         root.addWidget(self.insight)
 
-        tabs = QTabWidget()
+        self.tabs = tabs = QTabWidget()
         root.addWidget(tabs, 1)
         self.videos = self._table(["Posted", "Caption", "Views", "Likes", "Comments", "Shares", "Engagement",
                                    "Views lately", "Score"])
@@ -136,6 +136,7 @@ class AccountPage(QWidget):
         self.state.account_changed.connect(self.refresh)
         self.state.account_switched.connect(self.refresh)
         self.state.library_changed.connect(self.refresh)
+        self.state.niche_switched.connect(self.refresh)
         self.state.stats_changed.connect(self._stats_changed)
         self.state.jobs_changed.connect(self._update_buttons)
         self.refresh()
@@ -200,13 +201,21 @@ class AccountPage(QWidget):
                          *self._delta(p.likes, prev[2] if prev else None, since) if known else ("", ""))
         self.c_videos.set(fmt_num(p.video_count) if known else "—")
         vids = sorted(st.videos(a.id).values(), key=lambda v: v.create_time, reverse=True)
+        by_tid = {i.tiktok_id: i for i in st.items.values() if i.tiktok_id and i.account == a.id}
+        # With a niche picked: the videos posted from this app that are in it (or, for "No niche", the rest)
+        want, niche = self.state.niche_filter, self.state.niche_label()
+        if want != niches.ALL:
+            index = self.state.niches()
+            vids = [v for v in vids if (index.matches(by_tid[v.id], want) if v.id in by_tid else want == niches.NONE)]
         total_views = sum(v.views for v in vids)
-        self.c_views.set(fmt_num(total_views) if vids else "—", f"across {len(vids)} videos" if vids else "")
+        what = f"{niche} videos" if want not in (niches.ALL, niches.NONE) else "videos"
+        self.c_views.set(fmt_num(total_views) if vids else "—", f"across {len(vids)} {what}" if vids else "")
         recent = [v.views for v in vids[:10]]
-        self.c_avg.set(fmt_num(statistics.median(recent)) if recent else "—")
+        self.c_avg.set(fmt_num(statistics.median(recent)) if recent else "—", niche)
+        self.tabs.setTabText(0, f"Videos on TikTok · {niche}" if niche else "Videos on TikTok")
+        self.tabs.setTabText(1, f"Posted from this app · {niche}" if niche else "Posted from this app")
 
         # Videos table
-        by_tid = {i.tiktok_id: i for i in st.items.values() if i.tiktok_id and i.account == a.id}
         self.videos.setSortingEnabled(False)
         self.videos.setRowCount(len(vids))
         for r, v in enumerate(vids):
@@ -231,7 +240,8 @@ class AccountPage(QWidget):
         self.videos.setSortingEnabled(True)
 
         # App history
-        posted = [i for i in st.items.values() if i.account == a.id and (i.status in ("posted", "failed") or i.attempts)]
+        posted = self.state.in_niche([i for i in st.items.values()
+                                      if i.account == a.id and (i.status in ("posted", "failed") or i.attempts)])
         posted.sort(key=lambda i: i.posted_at or i.added_at, reverse=True)
         self.history.setSortingEnabled(False)
         self.history.setRowCount(len(posted))
@@ -284,7 +294,7 @@ class AccountPage(QWidget):
     def _insight(self) -> str:
         """Does a higher score actually mean more views on this account? Compare halves once there's data."""
         st, aid = self.state.store, self.state.active.id
-        pairs = [(i.total, st.video_for(i).views) for i in st.items.values()
+        pairs = [(i.total, st.video_for(i).views) for i in self.state.in_niche(list(st.items.values()))
                  if i.account == aid and i.total is not None and st.video_for(i) and time.time() - (i.posted_at or 0) > 86400]
         learned = "".join(f"<br>🎬 {html.escape(line)}" for line in
                           results.insights([o for o in results.outcomes(st) if o.account == aid]))

@@ -249,15 +249,16 @@ def safe_name(text: str, limit: int = 60) -> str:
 
 
 def export_ready(store: Store, account: Account, s: Settings, root: Path | None = None,
-                 now: float | None = None) -> tuple[Path, int]:
-    """Copy the account's ready videos, in posting order, to <root>/<account>/<date>/ with a .txt
-    caption beside each: handy for posting from a phone through a synced folder."""
+                 now: float | None = None, items: list[VideoItem] | None = None) -> tuple[Path, int]:
+    """Copy the account's ready videos (or just `items` of them, e.g. one niche's), in posting order, to
+    <root>/<account>/<date>/ with a .txt caption beside each: handy for posting from a phone through a
+    synced folder."""
     now = time.time() if now is None else now
     folder = Path(root or s.ready_folder or default_ready_folder()).expanduser()
     folder = folder / safe_name(account.label, 40) / dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     folder.mkdir(parents=True, exist_ok=True)
     n = 0
-    for pos, it in enumerate((i for i in ready(store, account.id) if i.exists()), 1):
+    for pos, it in enumerate((i for i in (ready(store, account.id) if items is None else items) if i.exists()), 1):
         src = Path(it.path)
         dest = folder / f"{pos:02d} - {safe_name(it.headline)}{src.suffix.lower()}"
         if not dest.exists() or dest.stat().st_size != src.stat().st_size:

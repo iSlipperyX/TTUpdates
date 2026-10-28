@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QGridLayout, QH
                                QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QStyle, QStyledItemDelegate, QTimeEdit, QVBoxLayout, QWidget)
 
-from .. import jobs, schedule
+from .. import jobs, niches, schedule
 from ..accounts import POSTING_MODES
 from ..scoring import grade
 from ..store import VideoItem
@@ -22,6 +22,7 @@ from .state import AppState
 from .widgets import Segmented, badge_for, fmt_dur, label, panel, thumb_pixmap
 
 ID_ROLE = Qt.UserRole + 1
+POS_ROLE = Qt.UserRole + 2  # its place in the whole queue (a niche's videos are only some of it)
 
 
 class QueueDelegate(QStyledItemDelegate):
@@ -51,7 +52,7 @@ class QueueDelegate(QStyledItemDelegate):
         f.setPointSizeF(12)
         p.setFont(f)
         p.setPen(QColor(theme.MUTED))
-        p.drawText(QRectF(r.x() + 6, r.y(), 34, r.height()), Qt.AlignCenter, str(index.row() + 1))
+        p.drawText(QRectF(r.x() + 6, r.y(), 34, r.height()), Qt.AlignCenter, str(index.data(POS_ROLE) or index.row() + 1))
 
         p.drawPixmap(r.x() + 42, r.y() + 5, thumb_pixmap(item.thumb, 38, r.height() - 10))
 
@@ -84,7 +85,10 @@ class QueueDelegate(QStyledItemDelegate):
         p.setPen(QColor(theme.MUTED))
         caption = " ".join(item.caption.split())
         extra = caption if caption and caption != item.headline else Path(item.path).name  # not the title twice
-        sub = f"{fmt_dur(item.duration)}  ·  " + (f"{item.part_label}  ·  " if item.part_label else "") + extra[:120]
+        st = self.page.state
+        niche = st.niches().name_of(item) if not st.niche_label() else ""  # every niche shows: say which
+        sub = (f"{fmt_dur(item.duration)}  ·  " + (f"{item.part_label}  ·  " if item.part_label else "") +
+               (f"🏷 {niche}  ·  " if niche else "") + extra[:120])
         p.drawText(QRectF(x, r.y() + 48, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(sub, Qt.ElideRight, text_w))
 
@@ -193,6 +197,7 @@ class QueuePage(QWidget):
         self.state.jobs_changed.connect(self._update_buttons)
         self.state.account_switched.connect(self._account_switched)
         self.state.account_changed.connect(self._load_schedule)
+        self.state.niche_switched.connect(self._niche_switched)
         self._load_schedule()
         self.refresh()
 
@@ -303,6 +308,10 @@ class QueuePage(QWidget):
         self._load_schedule()
         self.refresh()
 
+    def _niche_switched(self) -> None:
+        self.list.clearSelection()
+        self.refresh()
+
     def replan(self) -> None:
         self.state.replan()
 
@@ -310,12 +319,16 @@ class QueuePage(QWidget):
         self.replan()
         a = self.state.active
         selected = set(self.selected_ids())
-        q = self.state.store.queue(a.id)
+        whole = self.state.store.queue(a.id)
+        place = {it.id: n for n, it in enumerate(whole, 1)}
+        q = self.state.in_niche(whole)
+        niche = self.state.niche_label()
         self.list.blockSignals(True)
         self.list.clear()
         for it in q:
             li = QListWidgetItem()
             li.setData(ID_ROLE, it.id)
+            li.setData(POS_ROLE, place[it.id])
             li.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
             self.list.addItem(li)
             if it.id in selected:
@@ -326,15 +339,22 @@ class QueuePage(QWidget):
         multi = len(self.state.accounts) > 1
         self.badge.setVisible(multi)
         self.badge.setPixmap(badge_for(a, 24))
-        self.empty.setText((f"Nothing is queued for {a.label} yet." if multi else "The queue is empty.") +
-                           "\nSelect videos in the Library and click “" + ("Queue for…" if multi else "Add to queue") + "”.")
+        if niche and whole:
+            whose = f"{a.label}'s" if multi else "the"
+            self.empty.setText(f"Nothing from {niche} is in {whose} queue.\n"
+                               f"{len(whole)} other video{'s are' if len(whole) != 1 else ' is'}: pick “All niches” "
+                               "at the top to see them.")
+        else:
+            self.empty.setText((f"Nothing is queued for {a.label} yet." if multi else "The queue is empty.") +
+                               "\nSelect videos in the Library and click “" + ("Queue for…" if multi else "Add to queue")
+                               + "”.")
         queued = [i for i in q if i.status == "queued"]
         failed = sum(1 for i in q if i.status == "failed")
         days = 0.0
         if queued and queued[-1].planned_at:
             days = (queued[-1].planned_at - time.time()) / 86400
         txt = f"{a.label}: " if multi else ""
-        txt += f"{len(q)} in the queue"
+        txt += f"{niche}: {len(q)} of {len(whole)} in the queue" if niche else f"{len(q)} in the queue"
         if queued:
             txt += f" · runs until {schedule.fmt_when(queued[-1].planned_at)}" + (f" ({days:.0f} days)" if days >= 2 else "")
         if failed:
@@ -371,6 +391,9 @@ class QueuePage(QWidget):
 
     def select_item(self, item_id: str) -> None:
         """Select one video (e.g. "Edit…" on the Ready page) and scroll to it."""
+        it = self.state.store.get(item_id)
+        if it is not None and not self.state.in_niche([it]):  # in another niche: show them all
+            self.state.set_niche_filter(niches.ALL)
         self.refresh()
         self.list.clearSelection()
         for r in range(self.list.count()):
@@ -409,6 +432,10 @@ class QueuePage(QWidget):
     # --- actions ------------------------------------------------------------------
 
     def _commit_order(self, ids: list[str]) -> None:
+        """Save the order the list shows. With one niche showing, its videos take the places they had
+        between the others, which keep theirs."""
+        if self.state.niche_label():
+            ids = niches.merge_order([i.id for i in self.state.store.queue(self.state.active.id)], ids)
         self.state.store.set_order(ids)
         self.state.save_soon()
         self.state.library_changed.emit()
@@ -417,7 +444,7 @@ class QueuePage(QWidget):
         self._commit_order(self._order())
 
     def _reorder(self, fn) -> None:
-        q = self.state.store.queue(self.state.active.id)
+        q = self.state.in_niche(self.state.store.queue(self.state.active.id))
         self._commit_order([i.id for i in fn(q)])
 
     def move(self, delta: int) -> None:

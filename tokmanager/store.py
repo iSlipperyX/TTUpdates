@@ -43,6 +43,7 @@ class VideoItem:
     niche: str = ""  # the niche's name, e.g. "Gaming"
     niche_id: str = ""  # stable across renames; shared back in results.json
     for_account: str = ""  # the TikTok @username the niche is for ("" = none named)
+    niche_set: str = ""  # the niche you picked for it (niches.py): a name, "-" for none, "" = worked out
     # ClipMonster 2.4+ part series: one moment cut into parts, each but the last saying "follow for part 2".
     # `series` is unique across the library: ClipMonster's id is only unique within one clips folder, and
     # the same video can be clipped into several folders (one per niche, or a later run), so it's keyed on it.

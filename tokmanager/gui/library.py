@@ -8,10 +8,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLineEdit, QMenu,
-                               QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
-                               QTableWidgetSelectionRange, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog,
+                               QLineEdit, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
+                               QTableWidgetItem, QTableWidgetSelectionRange, QVBoxLayout, QWidget)
 
+from .. import niches
 from ..jobs import analyze_item, ai_item
 from ..media import VIDEO_EXTS
 from ..store import VideoItem
@@ -22,7 +23,8 @@ from .widgets import (ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, badge
                       thumb_pixmap)
 
 ID_ROLE = Qt.UserRole + 1
-COLS = ["", "Video", "Score", "Length", "Format", "Status", "Added"]
+COLS = ["", "Video", "Score", "Length", "Format", "Status", "Niche", "Added"]
+NICHE_COL = 6
 STATUS_TEXT = {"new": "Not queued", "queued": "Queued", "uploading": "Posting…", "posted": "Posted", "failed": "Failed"}
 
 
@@ -122,7 +124,7 @@ class LibraryPage(QWidget):
         self.table.doubleClicked.connect(lambda _: self.open_file())
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c, w in ((0, 48), (2, 86), (3, 64), (4, 96), (5, 96), (6, 110)):
+        for c, w in ((0, 48), (2, 86), (3, 64), (4, 96), (5, 96), (NICHE_COL, 120), (7, 110)):
             hh.setSectionResizeMode(c, QHeaderView.Fixed)
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection_changed)
@@ -145,6 +147,7 @@ class LibraryPage(QWidget):
         self.state.jobs_changed.connect(self._update_buttons)
         self.state.account_changed.connect(self._accounts_changed)
         self.state.account_switched.connect(self._accounts_changed)
+        self.state.niche_switched.connect(self.refresh)
         self.refresh()
 
     def _fill_filter(self) -> None:
@@ -248,6 +251,9 @@ class LibraryPage(QWidget):
         facts.append(self._status_text(item))
         if item.source_reason:
             facts.append(f"Clip finder: “{item.source_reason}”")
+        index = self.state.niches()
+        if index.name_of(item):
+            facts.append(f"Niche: {index.name_of(item)} ({index.why(item)})")
         if item.cleaned_at:
             facts.append(f"cleaned up {dt.datetime.fromtimestamp(item.cleaned_at):%d %b %Y}: its files were deleted "
                          "and a record of it kept (right-click → Open its record)")
@@ -271,8 +277,9 @@ class LibraryPage(QWidget):
     def _visible_items(self) -> list[VideoItem]:
         f = self.filter.currentData()
         q = self.search.text().strip().lower()
+        index = self.state.niches()
         out = []
-        for it in self.state.store.all():
+        for it in self.state.in_niche(self.state.store.all()):
             if bool(it.cleaned_at) != (f == "cleaned"):  # cleaned-up posts only show under their own filter
                 continue
             if f == "unscored" and it.score:
@@ -282,7 +289,7 @@ class LibraryPage(QWidget):
                     continue
             elif f not in ("all", "unscored", "cleaned") and it.status != f:
                 continue
-            if q and q not in it.name.lower() and q not in it.caption.lower() and q not in it.path.lower():
+            if q and not any(q in t.lower() for t in (it.name, it.caption, it.path, index.name_of(it))):
                 continue
             out.append(it)
         return out
@@ -290,6 +297,7 @@ class LibraryPage(QWidget):
     def refresh(self) -> None:
         selected = set(self.selected_ids())
         items = self._visible_items()
+        index = self.state.niches()
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(items))
         for r, it in enumerate(items):
@@ -314,8 +322,14 @@ class LibraryPage(QWidget):
             status.setForeground(QColor(theme.STATUS_COLOURS.get(it.status, theme.MUTED)))
             if it.status == "failed" and it.last_error:
                 status.setToolTip(it.last_error)
+            niche_name = index.name_of(it)
+            niche = SortItem(niche_name or "—", niche_name.casefold() or "~")
+            niche.setToolTip(f"{niche_name}: {index.why(it)}" if niche_name else
+                             "No niche. Right-click → Niche to pick one.")
+            if not niche_name:
+                niche.setForeground(QColor(theme.MUTED))
             added = SortItem(dt.datetime.fromtimestamp(it.added_at).strftime("%d %b %H:%M"), it.added_at)
-            for c, cell in enumerate((thumb, name, score, length, fmt, status, added)):
+            for c, cell in enumerate((thumb, name, score, length, fmt, status, niche, added)):
                 self.table.setItem(r, c, cell)
         self.table.setSortingEnabled(True)
         # Restore selection
@@ -325,6 +339,7 @@ class LibraryPage(QWidget):
                 if self.table.item(r, 0).data(ID_ROLE) in selected:
                     self.table.setRangeSelected(QTableWidgetSelectionRange(r, 0, r, len(COLS) - 1), True)
             self.table.blockSignals(False)
+        self.table.setColumnHidden(NICHE_COL, not index.niches)
         has = self.table.rowCount() > 0
         self.table.setVisible(has or bool(self.state.store.items))
         self.empty.setVisible(not self.state.store.items)
@@ -401,6 +416,7 @@ class LibraryPage(QWidget):
                 also.addAction(icon, a.label, lambda i=a.id, p=posted: self.copy_to(p, i))
         else:
             m.addAction("Add to queue", self.queue_selected)
+        self._niche_menu(m.addMenu("Niche"), [it for it in items if it])
         m.addAction("Re-score", lambda: self.score(ids, force=True))
         m.addAction("AI rate", self.ai_selected)
         records = [it.record for it in items if it and it.record and Path(it.record).is_file()]
@@ -410,6 +426,40 @@ class LibraryPage(QWidget):
         m.addSeparator()
         m.addAction("Remove from library", self.remove_selected)
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _niche_menu(self, m: QMenu, items: list[VideoItem]) -> None:
+        """Right-click → Niche: say which niche the selected videos are, when it was worked out wrong."""
+        index = self.state.niches()
+        now = {index.of(it) or niches.NONE for it in items}
+        for n in index.niches:
+            act = m.addAction(n.label, lambda name=n.name: self.set_niche(items, name))
+            act.setCheckable(True)
+            act.setChecked(now == {n.key})
+        if index.niches:
+            m.addSeparator()
+        m.addAction("New niche…", lambda: self.new_niche(items))
+        act = m.addAction("No niche", lambda: self.set_niche(items, niches.NONE))
+        act.setCheckable(True)
+        act.setChecked(now == {niches.NONE})
+        if any(it.niche_set for it in items):
+            m.addSeparator()
+            m.addAction("Work it out again", lambda: self.set_niche(items, ""))
+
+    def new_niche(self, items: list[VideoItem]) -> None:
+        name, ok = QInputDialog.getText(self, "New niche", "What are these videos? For example Gaming or Finance:")
+        if ok and niches.fold(name):
+            self.set_niche(items, name)
+
+    def set_niche(self, items: list[VideoItem], name: str) -> None:
+        with self.state.store.lock:
+            changed = niches.set_niche(items, name)
+        if not changed:
+            return
+        what = ("worked out again" if not name else "set to no niche" if name == niches.NONE
+                else f"set to {' '.join(name.split())}")
+        self.state.log(f"Niche of {changed} video{'s' * (changed != 1)} {what}.")
+        self.state.save_soon()
+        self.state.library_changed.emit()
 
     # --- actions ------------------------------------------------------------------
 
