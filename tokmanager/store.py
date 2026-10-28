@@ -131,9 +131,16 @@ class TikTokVideo:
         return (self.likes + self.comments + self.shares + self.saves) / self.views * 100 if self.views else 0.0
 
     def views_change(self) -> int | None:
-        if len(self.history) < 2:
+        h = self.history
+        if len(h) < 2:
             return None
-        return int(self.history[-1][1] - self.history[-2][1])
+        # The live view keeps updating the newest point until it's half an hour after the one before;
+        # until then compare with the point before that, so this is never just a minute's change.
+        base = h[-3] if len(h) >= 3 and h[-1][0] - h[-2][0] < LATELY else h[-2]
+        return int(h[-1][1] - base[1])
+
+
+LATELY = 30 * 60  # "views lately" covers at least this long when the history allows (live.HISTORY_SPACING)
 
 
 @dataclass

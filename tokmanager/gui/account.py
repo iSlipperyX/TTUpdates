@@ -216,11 +216,12 @@ class AccountPage(QWidget):
         self.who.setText(f"{name}{when}")
 
         prev, since = _day_before(p.history)
-        self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—",
-                             *self._delta(p.followers, prev[1] if prev else None, since))
-        self.c_likes.set(fmt_num(p.likes) if p.fetched_at else "—",
-                         *self._delta(p.likes, prev[2] if prev else None, since))
-        self.c_videos.set(fmt_num(p.video_count) if p.fetched_at else "—")
+        known = bool(p.fetched_at) and p.has_stats  # an API login without user.info.stats has no numbers
+        self.c_followers.set(fmt_num(p.followers) if known else "—",
+                             *self._delta(p.followers, prev[1] if prev else None, since) if known else ("", ""))
+        self.c_likes.set(fmt_num(p.likes) if known else "—",
+                         *self._delta(p.likes, prev[2] if prev else None, since) if known else ("", ""))
+        self.c_videos.set(fmt_num(p.video_count) if known else "—")
         vids = sorted(st.videos(a.id).values(), key=lambda v: v.create_time, reverse=True)
         total_views = sum(v.views for v in vids)
         self.c_views.set(fmt_num(total_views) if vids else "—", f"across {len(vids)} videos" if vids else "")
@@ -305,7 +306,15 @@ class AccountPage(QWidget):
             self.api_connect_btn.style().polish(self.api_connect_btn)
             return
         need = "video.upload" if a.post_with == methods.API_DRAFT else "video.publish"
-        if methods.uses_api(a) and need not in methods.granted_scopes(a):
+        other = a.api_username.lstrip("@") if a.api_username and a.username and \
+            a.api_username.lstrip("@").lower() != a.username.lstrip("@").lower() else ""
+        if other:
+            # Connected to a different TikTok account than the one logged in: connecting again replaces it
+            self.api_connect_btn.setVisible(True)
+            self.api_connect_btn.setText("Connect again…")
+            self.api_connect_btn.setToolTip(f"The API connection is for @{other}. Log in as @{a.username} in the "
+                                            "browser, then connect again.")
+        elif methods.uses_api(a) and need not in methods.granted_scopes(a):
             # Connected for watching only: connecting again asks TikTok for posting too
             self.api_connect_btn.setVisible(True)
             self.api_connect_btn.setText("Allow posting…")
@@ -323,6 +332,8 @@ class AccountPage(QWidget):
             verdict = {"ok": "✓ test passed", "warn": "⚠ test passed with a warning",
                        "fail": f"<span style='color:{theme.BAD}'>✖ test failed</span>"}.get(a.api_check, "tested")
             bits.append(f"{verdict} {_ago(a.api_check_at)}")
+        if other:
+            bits.insert(0, f"<span style='color:{theme.BAD}'>⚠ not @{html.escape(a.username)}: connect again</span>")
         self.api_status.setText(" · ".join(bits))
         self.api_status.setToolTip(html.escape(a.api_check_detail).replace("\n", "<br>"))
 

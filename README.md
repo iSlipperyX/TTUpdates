@@ -80,8 +80,8 @@ minute (or every 30 s to 10 min). Today's new views, likes, comments, shares and
 latest videos with their views in the last hour and a small trend line, and an activity feed:
 "+250 views on …", new followers, milestones (1K, 10K…), a video taking off, and **a video you
 posted from your phone**, which is matched to its clip in the queue and marked as posted by itself.
-Notifications for new posts, milestones and videos taking off are on by default (**Settings → TikTok
-API**). **Watch live** turns it off per account. Until the account is connected, the page shows
+Notifications when a queued clip shows up as posted, for milestones and for videos taking off are on
+by default (**Settings → TikTok API**); several at once come as one. **Watch live** turns it off per account. Until the account is connected, the page shows
 the two setup steps (see [Live stats with the official TikTok API](#live-stats-with-the-official-tiktok-api)).
 
 **Account**: log the shown account in (and **Connect API** for live stats), then see followers, likes, every video's views, likes, comments, shares and

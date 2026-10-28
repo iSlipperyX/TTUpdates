@@ -262,3 +262,43 @@ def test_an_account_connected_only_for_watching_can_allow_posting(made):
     st.active.post_with = "api"
     page.refresh()
     assert page.api_connect_btn.isVisible() and page.api_connect_btn.text() == "Allow posting…"
+
+
+def test_several_alerts_from_one_reading_come_as_one(made):
+    from tokmanager import live
+
+    st = made()
+    mon, page = page_for(st)
+    got = []
+    mon.alert.connect(lambda title, text: got.append((title, text)))
+    events = [live.Event(at=1, kind="milestone", text=f"🏆 video {n} passed 1K views.", alert=True) for n in range(5)]
+    mon._notify(st.active, events)
+    assert len(got) == 1 and got[0][0] == "5 updates on @cats" and "3 more" in got[0][1]
+
+
+def test_a_connection_for_another_account_offers_to_connect_again(made):
+    from tokmanager.gui.account import AccountPage
+
+    st = made()
+    st.active.api_username = "dogs"
+    page = AccountPage(st)
+    page.show()
+    assert page.api_connect_btn.isVisible() and page.api_connect_btn.text() == "Connect again…"
+    assert "not @cats" in page.api_status.text()
+
+
+def test_live_readings_keep_clipmonsters_results_current(made, monkeypatch):
+    from tokmanager import results
+
+    st = made()
+    mon, page = page_for(st)
+    shared = []
+    monkeypatch.setattr(results, "share", lambda store: shared.append(store) or 1)
+    st.settings.share_results = True
+    mon._share(False)
+    mon._share(False)  # not again within half an hour
+    mon._share(True)  # a clip just showed up as posted: now
+    assert len(shared) == 2
+    st.settings.share_results = False
+    mon._share(True)
+    assert len(shared) == 2

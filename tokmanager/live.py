@@ -11,8 +11,9 @@ it with the reading before and turns the difference into events for the Live pag
 - a video taking off (far more views in the last 10 minutes than it usually gets),
 - milestones (1K, 10K, 100K… views on a video; 100, 1K, 10K… followers).
 
-The numbers also go into the library's stats, so the Account page and ClipMonster's results stay
-current. Events are kept in live/<account id>.jsonl in the app's data folder (the last 2,000).
+The numbers also go into the library's stats, so the Account page and ClipMonster's results (shared
+at most every half hour) stay current. Events are kept in live/<account id>.jsonl in the app's data
+folder: the last 2,000, and all of today's for its totals.
 
 Limits that come from TikTok: the API only lists *public* videos ("Only me" posts don't show),
 its numbers can trail the TikTok app by a few minutes, and it has no comment text, only counts.
@@ -189,9 +190,8 @@ class EventLog:
         if not events:
             return
         self.events = _kept(self.events + events, time.time() if now is None else now)
-        if self._lines + len(events) > len(self.events) + MAX_EVENTS // 2:
-            self._rewrite()
-            return
+        if self._lines + len(events) > len(self.events) + MAX_EVENTS // 2 and self._rewrite():
+            return  # otherwise (a locked temp file, say) append as usual and trim another time
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
@@ -201,15 +201,16 @@ class EventLog:
         except OSError:
             pass  # the feed still shows them; only the copy on disk is behind
 
-    def _rewrite(self) -> None:
+    def _rewrite(self) -> bool:
         try:
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text("".join(json.dumps(asdict(e), ensure_ascii=False) + "\n" for e in self.events),
                            encoding="utf-8")
             tmp.replace(self.path)
             self._lines = len(self.events)
+            return True
         except OSError:
-            pass
+            return False
 
     def clear(self) -> None:
         self.events = []
@@ -366,7 +367,7 @@ class Watcher:
         first_of_run = not self.last_ok
         if first_of_run:
             self._seed(store)
-        never_read = not self.prev and self.prev_followers is None
+        never_read = not self.prev_at  # nothing in the library or from an earlier reading to compare with
         since = self.prev_at
         gap = r.at - since if since else 0.0
         away = bool(since) and gap > max(AWAY_AFTER, 3 * max(MIN_INTERVAL, int(s.live_interval or 60)))

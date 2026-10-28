@@ -13,6 +13,7 @@ from ..tiktok import methods
 from .state import AppState, Job
 
 TICK_MS = 5_000
+SHARE_EVERY = 30 * 60  # how often live readings pass on to ClipMonster's results.json how its clips do
 
 
 @dataclass
@@ -37,6 +38,7 @@ class LiveMonitor(QObject):
         super().__init__(state)
         self.state = state
         self.watchers: dict[str, live.Watcher] = {}
+        self.shared_at = 0.0
         self.timer = QTimer(self, interval=TICK_MS, timeout=self.tick)
         if start:
             self.timer.start()
@@ -167,9 +169,8 @@ class LiveMonitor(QObject):
                             st.log(e.text)
                     st.library_changed.emit()
                 if s.live_alerts:
-                    for e in events:
-                        if e.alert:
-                            self.alert.emit(_title(e, account), e.text)
+                    self._notify(account, [e for e in events if e.alert])
+                self._share(any(e.kind == "seen" for e in events))
             self.updated.emit(account.id)
 
         def crashed(msg: str) -> None:
@@ -182,6 +183,30 @@ class LiveMonitor(QObject):
         job.account_id = a.id
         st.run(job, pool="live", on_success=done, on_failure=crashed, quiet=True)
         self.updated.emit(a.id)
+
+
+    def _notify(self, a: Account, events: list[live.Event]) -> None:
+        """One notification per reading: after a night away, ten milestones are one message, not ten."""
+        if len(events) == 1:
+            self.alert.emit(_title(events[0], a), events[0].text)
+        elif events:
+            more = len(events) - 2
+            self.alert.emit(f"{len(events)} updates on {a.handle}",
+                            "\n".join(e.text for e in events[:2]) + (f"\n…and {more} more on the Live page." if more > 0
+                                                                      else ""))
+
+    def _share(self, now_please: bool) -> None:
+        """Keep ClipMonster's results.json current without a Refresh (at most every half hour)."""
+        st = self.state
+        if not st.settings.share_results or (not now_please and time.time() - self.shared_at < SHARE_EVERY):
+            return
+        self.shared_at = time.time()
+        from .. import results
+
+        try:
+            results.share(st.store)
+        except OSError as exc:
+            st.log(f"Couldn't share results with ClipMonster: {exc}")
 
 
 def _title(e: live.Event, a: Account) -> str:

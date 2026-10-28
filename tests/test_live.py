@@ -629,3 +629,33 @@ def test_a_watch_only_connection_tests_fine_but_cant_post(fake):
     a.post_with = "api_draft"
     ok, why = methods.can_post(settings(), a)
     assert not ok and "Connect API" in why
+
+
+def test_without_stats_or_videos_the_start_line_comes_once(tmp_path):
+    a, st, w = _watch(tmp_path)
+    t = 1_800_000_000.0
+    kinds = []
+    for k in range(4):
+        r = live.Reading(at=t + 60 * k, profile=Profile(username="cats", fetched_at=t + 60 * k, has_stats=False),
+                         videos=[])
+        kinds += [e.kind for e in w.apply(st, a, settings(), r)]
+    assert kinds == ["start"]
+
+
+def test_a_failing_trim_still_saves_new_events(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "MAX_EVENTS", 10)
+    log = live.EventLog("x", tmp_path)
+    monkeypatch.setattr(log, "_rewrite", lambda: False)  # a locked temp file, say
+    old = time.time() - 3 * 86400
+    for n in range(30):
+        log.add([live.Event(at=old + n, kind="moved", text=f"e{n}")])
+    assert live.EventLog("x", tmp_path).events[-1].text == "e29"
+
+
+def test_views_lately_is_never_just_a_minute_of_change(tmp_path):
+    st = Store(tmp_path / "lib.json")
+    t = 1_800_000_000.0
+    for i in range(32):
+        st.update_tiktok_videos("A", [TikTokVideo(id="v", views=i * 100)], now=t + i * 60, spacing=1800)
+    v = st.videos("A")["v"]
+    assert len(v.history) == 3 and v.views_change() == 3100  # since the point half an hour back, not +100
