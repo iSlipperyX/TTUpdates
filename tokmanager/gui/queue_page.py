@@ -363,11 +363,8 @@ class QueuePage(QWidget):
             self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Nothing is queued.")
         else:
             nxt = q[0]
-            method = {methods.BROWSER: "your browser login", methods.API: "the TikTok API",
-                      methods.API_DRAFT: "the TikTok API, as a draft to your TikTok app"}.get(a.post_with,
-                                                                                         "your browser login")
             self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.headline)}</b> "
-                                    f"at {schedule.fmt_when(nxt.planned_at)} via {method}.")
+                                    f"at {schedule.fmt_when(nxt.planned_at)} via your browser login.")
 
     def selected_ids(self) -> list[str]:
         return [li.data(ID_ROLE) for li in sorted(self.list.selectedItems(), key=self.list.row)]

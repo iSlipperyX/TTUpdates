@@ -9,7 +9,6 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .. import live
 from ..accounts import Account
-from ..tiktok import methods
 from .state import AppState, Job
 
 TICK_MS = 5_000
@@ -26,7 +25,7 @@ class Failure:
 
 @dataclass
 class Status:
-    state: str  # setup | connect | off | starting | live | reading | retrying | stopped
+    state: str  # login | off | starting | live | reading | waiting | retrying | stopped
     text: str
 
 
@@ -53,28 +52,33 @@ class LiveMonitor(QObject):
         return w
 
     def can_watch(self, a: Account) -> bool:
-        return methods.app_ready(self.state.settings) and methods.api_connected(a)
+        return a.logged_in or bool(a.username)  # a public profile can be read, but the login makes it reliable
+
+    BROWSER_JOBS = ("login", "post", "account", "check", "profile")
 
     def watching(self, a: Account) -> bool:
         return a.live and self.can_watch(a)
 
     def reading(self, account_id: str) -> bool:
+        """A reading of this account is queued or running."""
         return any(j.kind == "live" and j.account_id == account_id for j in self.state.jobs)
+
+    def _reading_started(self, account_id: str) -> bool:
+        return any(j.kind == "live" and j.account_id == account_id and j.started for j in self.state.jobs)
 
     def status(self, a: Account, now: float | None = None) -> Status:
         now = time.time() if now is None else now
-        s = self.state.settings
-        if not methods.app_ready(s):
-            return Status("setup", "Set up your TikTok developer app to watch live (Settings → TikTok API).")
-        if not methods.api_connected(a):
-            return Status("connect", f"Connect {a.label} to the TikTok API to watch it live.")
+        if not self.can_watch(a):
+            return Status("login", f"Log {a.label} in to TikTok to watch it live.")
         if not a.live:
             return Status("off", "Not watching. Turn on Watch live to see views, likes and followers as they come in.")
         w = self.watcher(a.id)
         if w.stopped:
             return Status("stopped", f"Stopped: {w.stopped}")
-        if self.reading(a.id):
+        if self._reading_started(a.id):
             return Status("reading", "Reading TikTok…")
+        if self.reading(a.id) or (self.state.account_busy(a.id, self.BROWSER_JOBS) and now >= w.next_at):
+            return Status("waiting", "Waiting for the browser (a post or other TikTok job is running)…")
         if not w.last_ok:
             if w.error:
                 return Status("retrying", f"{w.error} Trying again in {live.ago(w.next_at - now)}.")
@@ -91,13 +95,16 @@ class LiveMonitor(QObject):
         known = set(self.state.accounts.ids())
         for aid in [a for a in self.watchers if a not in known]:  # removed accounts
             del self.watchers[aid]
+        if any(j.kind == "live" for j in self.state.jobs):
+            return  # one reading in the browser queue at a time, so a post that comes due waits for one at most
         for a in self.state.accounts:
             w = self.watcher(a.id)
             if not a.live or w.stopped or now < w.next_at or self.reading(a.id):
                 continue
-            if not self.can_watch(a):
-                continue
+            if not self.can_watch(a) or self.state.account_busy(a.id, self.BROWSER_JOBS):
+                continue  # its browser profile is in use: read after that job
             self._read(a, w, now)
+            return
 
     def check_now(self, account_id: str) -> None:
         a = self.state.accounts.get(account_id)
@@ -105,12 +112,12 @@ class LiveMonitor(QObject):
             return
         w = self.watcher(a.id)
         w.resume()
-        if self.watching(a) and not self.reading(a.id):
+        if self.watching(a) and not self.reading(a.id) and not self.state.account_busy(a.id, self.BROWSER_JOBS):
             self._read(a, w, time.time())
         self.updated.emit(a.id)
 
     def resume(self, account_id: str) -> None:
-        """The account was connected again, or watching turned back on: read it soon."""
+        """The account was logged in again, or watching turned back on: read it soon."""
         self.watcher(account_id).resume()
         QTimer.singleShot(200, self, self.tick)
 
@@ -131,18 +138,14 @@ class LiveMonitor(QObject):
         full = w.want_full(now)
         w.schedule(s, now)  # the next one is planned from the start, so a slow answer doesn't push it back
 
-        def work(_j: Job):
-            import requests
-
-            from ..tiktok.api import ApiError
-
+        def work(j: Job):
+            if j.cancelled() or st.accounts.get(a.id) is None:  # removed while it waited
+                return Failure("Cancelled.", "cancelled")
             try:
-                return live.read(s, a, full=full)
-            except ApiError as exc:
+                return live.read(s, a, full=full, log=lambda _m: None, cancelled=j.cancelled)
+            except live.LiveError as exc:
                 return Failure(str(exc), exc.code)
-            except requests.RequestException:
-                return Failure("TikTok couldn't be reached (is the internet down?).", "network")
-            except (OSError, ValueError) as exc:  # the tokens file, or an answer that isn't JSON
+            except OSError as exc:  # the browser profile folder
                 return Failure(f"{exc}.", "other")
 
         def done(result) -> None:
@@ -150,13 +153,19 @@ class LiveMonitor(QObject):
             if account is None:  # removed while reading
                 return
             if isinstance(result, Failure):
+                if result.code == "cancelled":  # the app is closing
+                    return
                 events = w.failed(s, result.message, result.code, time.time())
+                if result.code == "logged_out" and account.logged_in:
+                    self._logged_out(account)
                 if w.failures == 1 or w.stopped:
                     st.log(f"Live view of {account.handle}: {result.message}")
                 for e in events:
                     if e.alert and s.live_alerts:
                         self.alert.emit(f"Live view of {account.handle} stopped", result.message)
             else:
+                if result.logged_in is False and account.logged_in:  # read as a visitor: the login ran out
+                    self._logged_out(account)
                 had_name = account.username
                 events = w.apply(st.store, account, s, result)
                 if account.username != had_name:
@@ -171,6 +180,8 @@ class LiveMonitor(QObject):
                 if s.live_alerts:
                     self._notify(account, [e for e in events if e.alert])
                 self._share(any(e.kind == "seen" for e in events))
+                if w.next_at < time.time():  # it waited or took longer than the interval: plan from now
+                    w.schedule(s, time.time())
             self.updated.emit(account.id)
 
         def crashed(msg: str) -> None:
@@ -181,9 +192,17 @@ class LiveMonitor(QObject):
 
         job = Job(f"Reading {a.handle} live", work, kind="live")
         job.account_id = a.id
-        st.run(job, pool="live", on_success=done, on_failure=crashed, quiet=True)
+        # The browser pool: one TikTok window at a time per PC, so a reading never fights a post for the profile
+        st.run(job, pool="tiktok", on_success=done, on_failure=crashed, quiet=True)
         self.updated.emit(a.id)
 
+
+    def _logged_out(self, a: Account) -> None:
+        a.logged_in = False
+        self.state.save_accounts()
+        self.state.log(f"{a.label}'s TikTok login has run out. Log in again on the Account page"
+                       + (" (the Live page keeps reading its public profile meanwhile)." if a.username else "."))
+        self.state.account_changed.emit()
 
     def _notify(self, a: Account, events: list[live.Event]) -> None:
         """One notification per reading: after a night away, ten milestones are one message, not ten."""

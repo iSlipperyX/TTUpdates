@@ -37,6 +37,8 @@ SANDBOX = os.name == "nt"
 WEBDRIVER_SCRIPT = ("Object.defineProperty(Navigator.prototype, 'webdriver', "
                     "{get: () => false, configurable: true, enumerable: true});")
 
+CAPTCHA = "#captcha-verify-image, div[class*='captcha_verify'], #captcha_container"
+
 PRIVACY_LABELS = {
     "public": ("Everyone", "Public"),
     "friends": ("Friends", "Mutual"),
@@ -169,8 +171,14 @@ class TikTokBrowser:
         user = (scope.get("webapp.app-context") or {}).get("user") or {}
         return user.get("uniqueId") or ""
 
-    def fetch_account(self, username: str, max_videos: int = 120) -> tuple[Profile, list[TikTokVideo]]:
-        """Profile numbers plus per-video stats, read from the profile page as it loads."""
+    def fetch_account(self, username: str, max_videos: int = 120,
+                      captcha_wait: float | None = None) -> tuple[Profile, list[TikTokVideo]]:
+        """Profile numbers plus per-video stats, read from the profile page as it loads.
+
+        With `captcha_wait` (the live view) a captcha isn't read past: a hidden window stops with a
+        BrowserError, a shown one waits up to that long for it to be solved. Without it, the profile
+        numbers are kept and the videos may be missing, as before.
+        """
         username = username.lstrip("@").strip()
         if not username:
             username = self.whoami()
@@ -216,6 +224,9 @@ class TikTokBrowser:
             for _ in range(40):
                 self._check()
                 self._sleep(1.2)
+                if captcha_wait is not None and self._captcha_showing():  # it can come up as the grid loads
+                    self._wait_for_captcha(captcha_wait, stop_after=True)
+                    still = 0
                 if len(videos) >= min(max_videos, profile.video_count or max_videos):
                     break
                 if len(videos) == last:
@@ -428,15 +439,25 @@ class TikTokBrowser:
             except Exception:
                 pass
 
-    def _wait_for_captcha(self) -> None:
-        cap = self.page.locator("#captcha-verify-image, div[class*='captcha_verify'], #captcha_container")
-        if cap.count() and cap.first.is_visible():
+    def _captcha_showing(self) -> bool:
+        try:
+            cap = self.page.locator(CAPTCHA)
+            return bool(cap.count()) and cap.first.is_visible()
+        except Exception:  # noqa: BLE001 - the page navigated mid-check
+            return False
+
+    def _wait_for_captcha(self, timeout: float = 300, stop_after: bool = False) -> None:
+        """Wait while a captcha in the shown window is solved (a hidden one can't be: that stops). With
+        `stop_after`, a captcha still there after `timeout` stops too; otherwise the caller carries on."""
+        if self._captcha_showing():
             if self.headless:
                 raise BrowserError("TikTok is asking for a captcha. Turn on 'Show the browser' and try again.")
             self.log("TikTok is showing a captcha: please solve it in the browser window…")
-            end = time.time() + 300
-            while time.time() < end and cap.count() and cap.first.is_visible():
+            end = time.time() + timeout
+            while time.time() < end and self._captcha_showing():
                 self._sleep(1)
+            if stop_after and self._captcha_showing():
+                raise BrowserError("TikTok's captcha wasn't solved in time.")
 
     def _caption_editor(self, timeout: float = 30):
         return self._first_visible(["div.public-DraftEditor-content[contenteditable='true']",

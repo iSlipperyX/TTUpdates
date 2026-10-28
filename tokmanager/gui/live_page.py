@@ -1,4 +1,4 @@
-"""Live page: the shown account's numbers as they come in, from TikTok's official API (live.py)."""
+"""Live page: the shown account's numbers as they come in, read from its TikTok profile (live.py)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeade
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import live
-from ..tiktok import methods
 from . import theme
 from .library import SortItem
 from .live_monitor import LiveMonitor
@@ -26,10 +25,10 @@ TREND_ROLE = Qt.UserRole + 3
 SHOWN_VIDEOS = 60  # the newest videos in the table
 SHOWN_EVENTS = 400
 
-DOT = {"live": theme.GOOD, "reading": theme.GOOD, "starting": theme.ACCENT_2, "retrying": theme.WARN,
-       "stopped": theme.BAD, "off": theme.MUTED, "setup": theme.MUTED, "connect": theme.MUTED}
-WORD = {"live": "Live", "reading": "Live", "starting": "Starting", "retrying": "Retrying", "stopped": "Stopped",
-        "off": "Off", "setup": "Not set up", "connect": "Not connected"}
+DOT = {"live": theme.GOOD, "reading": theme.GOOD, "waiting": theme.ACCENT_2, "starting": theme.ACCENT_2,
+       "retrying": theme.WARN, "stopped": theme.BAD, "off": theme.MUTED, "login": theme.MUTED}
+WORD = {"live": "Live", "reading": "Live", "waiting": "Live", "starting": "Starting", "retrying": "Retrying",
+        "stopped": "Stopped", "off": "Off", "login": "Not logged in"}
 KIND_COLOUR = {"seen": theme.GOOD, "hot": theme.ACCENT, "milestone": theme.WARN, "error": theme.BAD,
                "followers": theme.ACCENT_2, "new": theme.ACCENT_2, "start": theme.MUTED, "away": theme.MUTED}
 
@@ -59,8 +58,8 @@ class TrendDelegate(QStyledItemDelegate):
 
 
 class LivePage(QWidget):
-    connect_requested = Signal()  # Connect API for the shown account (the main window does it)
-    setup_requested = Signal()  # Settings → TikTok API
+    login_requested = Signal()  # log the shown account in (the main window does it)
+    settings_requested = Signal()  # Settings → Live
 
     def __init__(self, state: AppState, monitor: LiveMonitor):
         super().__init__()
@@ -89,13 +88,14 @@ class LivePage(QWidget):
         bl.addLayout(col, 1)
         self.watch_btn = QPushButton("Watch live")
         self.watch_btn.setCheckable(True)
-        self.watch_btn.setToolTip("Read this account from TikTok's API every so often and show what changes")
+        self.watch_btn.setToolTip("Read this account's TikTok profile every few minutes, out of sight, and show what "
+                                  "changes")
         self.watch_btn.clicked.connect(lambda on: self.monitor.set_watching(self.state.active.id, on))
         self.interval = QComboBox()
         for secs, text in live.INTERVALS:
             self.interval.addItem(text, secs)
-        self.interval.setToolTip("How often TikTok is read, for every account you watch. TikTok's numbers "
-                                 "themselves can trail the app by a few minutes.")
+        self.interval.setToolTip("How often TikTok is read, for every account you watch. Each reading opens the "
+                                 "account's browser for a few seconds, out of sight.")
         self.interval.activated.connect(self._interval_picked)
         self.now_btn = QPushButton("⟳ Check now")
         self.now_btn.clicked.connect(lambda: self.monitor.check_now(self.state.active.id))
@@ -138,25 +138,25 @@ class LivePage(QWidget):
         bl.setSpacing(8)
         bl.addWidget(label("Watch your account live", "title"))
         bl.addWidget(label(
-            "TikTok Manager reads the account from TikTok's official API every minute (no browser window) and "
-            "shows what changes: views, likes, comments and shares on each video, new followers, videos taking "
-            "off, and milestones. When a clip from the Ready page shows up on TikTok, it's marked as posted by "
-            "itself, so posting from your phone needs no clicks here.", wrap=True))
+            "TikTok Manager reads the account's TikTok profile every few minutes, in its own browser login with "
+            "the window hidden, and shows what changes: views, likes, comments and shares on each video, new "
+            "followers, videos taking off, and milestones. When a clip from the Ready page shows up on TikTok, "
+            "it's marked as posted by itself, so posting from your phone needs no clicks here.", wrap=True))
         self.intro_steps = label("", wrap=True)
         self.intro_steps.setTextFormat(Qt.RichText)
         bl.addWidget(self.intro_steps)
         row = QHBoxLayout()
-        self.intro_setup = QPushButton("Set up the TikTok API…")
-        self.intro_setup.clicked.connect(self.setup_requested.emit)
-        self.intro_connect = QPushButton("Connect API")
-        self.intro_connect.setObjectName("primary")
-        self.intro_connect.clicked.connect(self.connect_requested.emit)
-        row.addWidget(self.intro_setup)
-        row.addWidget(self.intro_connect)
+        self.intro_login = QPushButton("Log in…")
+        self.intro_login.setObjectName("primary")
+        self.intro_login.clicked.connect(self.login_requested.emit)
+        self.intro_settings = QPushButton("Live settings…")
+        self.intro_settings.clicked.connect(self.settings_requested.emit)
+        row.addWidget(self.intro_login)
+        row.addWidget(self.intro_settings)
         row.addStretch(1)
         bl.addLayout(row)
-        bl.addWidget(label("TikTok's API lists public videos only, and its numbers can trail the TikTok app by a "
-                           "few minutes. It doesn't give comment text, only how many.", "muted", wrap=True))
+        bl.addWidget(label("TikTok's profile page shows public videos only, so \"Only me\" posts don't appear here.",
+                           "muted", wrap=True))
         lay.addWidget(box)
         lay.addStretch(1)
         return w
@@ -248,7 +248,7 @@ class LivePage(QWidget):
         self.badge.setPixmap(badge_for(a, 34))
         self.who.setText(f"{a.label}" + (f" (@{a.username})" if a.username and a.name else ""))
         status = self.monitor.status(a)
-        ready = status.state not in ("setup", "connect")
+        ready = status.state != "login"
         self.stack.setCurrentIndex(1 if ready else 0)
         self.watch_btn.setVisible(ready)
         self.watch_btn.setChecked(a.live)
@@ -305,22 +305,11 @@ class LivePage(QWidget):
 
     def _fill_intro(self, state: str) -> None:
         a = self.state.active
-        app = methods.app_ready(self.state.settings)
-        done, todo = f"<span style='color:{theme.GOOD}'>✓</span>", "○"
-        self.intro_steps.setText(
-            f"{done if app else todo} <b>1.</b> Make your free developer app on developers.tiktok.com and put its "
-            "keys in Settings → TikTok API (it walks you through it, about 10 minutes).<br>"
-            f"{todo} <b>2.</b> Connect {html.escape(a.label)} to it: TikTok asks you to approve TikTok Manager, "
-            "once. The login lasts a year.")
-        self.intro_setup.setVisible(True)
-        self.intro_setup.setObjectName("" if app else "primary")
-        self.intro_setup.setText("TikTok API settings…" if app else "Set up the TikTok API…")
-        self.intro_setup.style().unpolish(self.intro_setup)
-        self.intro_setup.style().polish(self.intro_setup)
-        self.intro_connect.setVisible(app and state == "connect")
-        busy = self.state.account_busy(a.id, ("login", "api"))
-        self.intro_connect.setEnabled(not busy)
-        self.intro_connect.setText("Connecting…" if busy else f"Connect {a.label}")
+        self.intro_steps.setText(f"Log {html.escape(a.label)} in to TikTok on the Account page (once, in a normal "
+                                 "browser window). The Live page starts by itself after that.")
+        busy = self.state.account_busy(a.id, ("login",))
+        self.intro_login.setEnabled(not busy)
+        self.intro_login.setText("Logging in…" if busy else f"Log in {a.label}…")
 
     def _fill_feed(self, events: list[live.Event], videos: dict) -> None:
         f = self.feed
@@ -357,12 +346,12 @@ class LivePage(QWidget):
         if not self.isVisible() and self.status.text():
             return
         status = self.monitor.status(self.state.active)
-        if (status.state in ("setup", "connect")) != (self.stack.currentIndex() == 0):
+        if (status.state == "login") != (self.stack.currentIndex() == 0):
             self._changed()  # connected or set up meanwhile: show the other view
         colour = DOT.get(status.state, theme.MUTED)
         self.status.setText(f"<span style='color:{colour}'>●</span> <b>{WORD.get(status.state, '')}</b> · "
                             f"{html.escape(status.text)}")
-        self.now_btn.setEnabled(status.state not in ("reading",))
+        self.now_btn.setEnabled(status.state not in ("reading", "waiting"))
 
     # --- actions ------------------------------------------------------------------
 

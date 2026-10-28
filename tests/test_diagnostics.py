@@ -30,10 +30,10 @@ def test_crash_report_is_written_and_old_ones_pruned(monkeypatch):
 
 
 def test_report_has_the_essentials_and_no_secrets():
-    s = Settings(ai_api_key="sk-ant-secret-123", api_client_secret="shh-456")
+    s = Settings(ai_api_key="sk-ant-secret-123")
     s.save()
     crash("latest problem")
     text = diagnostics.report()
     assert "TikTok Manager" in text and "Accounts: 1" in text and "latest problem" in text
-    assert "posting with: 1 browser" in text and "TikTok API: app not set up" in text
-    assert "sk-ant-secret-123" not in text and "shh-456" not in text
+    assert "Live view: 0 account(s) every 5 min" in text and "TikTok API" not in text
+    assert "sk-ant-secret-123" not in text

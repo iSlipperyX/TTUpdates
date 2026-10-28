@@ -70,9 +70,6 @@ class Settings:
     # Posting. default_privacy, default_hashtags, ai_niche, the schedule, autopilot and browser_logged_in
     # are per account (accounts.Account); the values here only seed the first account when upgrading
     # from 1.0, and Account.apply() overrides them on the copy each account's work runs with.
-    # Before 1.4 the posting method was app-wide; now each account has its own (Account.post_with).
-    # upload_method and api_post_mode only choose it for accounts saved by an older version.
-    upload_method: str = "browser"  # "browser" (your logged-in TikTok in Edge/Chrome) or "api"
     browser_channel: str = "msedge"  # msedge | chrome
     show_browser: bool = True
     default_privacy: str = "public"  # public | friends | private
@@ -102,14 +99,9 @@ class Settings:
     phone_folder: str = ""  # phone hand-off (phone.py): today's clips kept here, e.g. OneDrive\TikTok Ready; "" = off
     last_summary_day: str = ""
     share_results: bool = True  # results.py: tell ClipMonster how its clips did (results.json)
-    # Official TikTok API (optional, needs your own developer app)
-    api_client_key: str = ""
-    api_client_secret: str = ""
-    api_redirect_port: int = 53682
-    api_post_mode: str = "direct"  # direct (publishes) | inbox (sends a draft to the TikTok app)
-    api_audited: bool = False  # TikTok approved the app's audit, so direct posts can be public
-    # Live view (live.py): accounts connected to the API are read this often (seconds)
-    live_interval: int = 60
+    # Live view (live.py): logged-in accounts' profile pages are read this often (seconds), in the background
+    live_interval: int = 300
+    live_show_browser: bool = False  # show the window while reading (if TikTok keeps asking for a captcha)
     live_alerts: bool = True  # tray notifications: a video taking off, milestones, a queued clip seen on TikTok
     # Window
     minimize_to_tray: bool = True
@@ -134,9 +126,8 @@ class Settings:
         s = cls(**{k: v for k, v in data.items() if k in known and k != "weights"})
         if "setup_done" not in data:  # saved by a version before first-run setup: not a new install
             s.setup_done = True
-        if "api_audited" not in data and s.upload_method == "api" and s.api_post_mode == "direct":
-            # Posted publicly through the API before 1.5 (which didn't ask): keep doing so.
-            s.api_audited = True
+        if "api_client_key" in data and s.live_interval < 120:  # 1.5.0 read its API every minute or faster
+            s.live_interval = 300
         if isinstance(s.watch_folders, str):  # hand-edited, or a single folder written as text
             s.watch_folders = [s.watch_folders]
         s.watch_folders = [str(f) for f in s.watch_folders or [] if f]
@@ -154,4 +145,4 @@ class Settings:
         safefile.save(self.path(), data)
 
 
-SECRET_FIELDS = ("ai_api_key", "api_client_secret")
+SECRET_FIELDS = ("ai_api_key",)

@@ -57,16 +57,7 @@ class Account:
     browser_profile: str = ""
     tokens_file: str = ""
     logged_in: bool = False  # TikTok's login cookies were seen in its browser profile
-    # How it posts: "browser" (TikTok's website in its own browser profile), "api" (the official
-    # API publishes) or "api_draft" (the API sends a draft to the TikTok app). See tiktok/methods.py.
-    post_with: str = "browser"
-    # The official API connection (tokens in tokens_file): who approved it, when, and the last test
-    api_username: str = ""
-    api_connected_at: float = 0.0
-    api_check_at: float = 0.0
-    api_check: str = ""  # "ok" | "warn" | "fail"
-    api_check_detail: str = ""
-    live: bool = True  # watch it live (live.py) while it's connected to the API
+    live: bool = True  # watch it live (live.py, the Live page) while it's logged in
     # Schedule
     autopilot: bool = False
     posts_per_day: int = 3
@@ -114,25 +105,13 @@ class Account:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def tokens_path(self) -> Path:
-        path = app_dir() / self.tokens_file
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
     def login_paths(self) -> tuple[Path, Path]:
-        """The browser profile folder and API tokens file (without creating them)."""
+        """The browser profile folder and the API tokens file an older version may have left (not created)."""
         return cache_dir() / self.browser_profile, app_dir() / self.tokens_file
 
     def apply(self, s: Settings) -> Settings:
         """A copy of the app settings with this account's schedule and posting defaults."""
         return replace(s, **{target: getattr(self, src) for src, target in PER_ACCOUNT.items()})
-
-
-def _method_from(s: Settings) -> str:
-    """The posting method an account saved before 1.4 had, from the old app-wide setting."""
-    if s.upload_method != "api":
-        return "browser"
-    return "api_draft" if s.api_post_mode == "inbox" else "api"
 
 
 class Accounts:
@@ -152,8 +131,7 @@ class Accounts:
         data = safefile.load(acc.path, "your account list")
         if isinstance(data, dict):
             known = {f.name for f in fields(Account)}
-            acc.items = [Account(**{k: v for k, v in d.items() if k in known},
-                                 **({} if "post_with" in d else {"post_with": _method_from(settings)}))
+            acc.items = [Account(**{k: v for k, v in d.items() if k in known})
                          for d in data.get("accounts", []) if isinstance(d, dict) and d.get("id")]
             acc.active_id = data.get("active", "")
         if not acc.items:
@@ -167,7 +145,7 @@ class Accounts:
     @staticmethod
     def _from_settings(s: Settings) -> Account:
         """The first account, made from a 1.0 install's settings and login (or fresh defaults)."""
-        a = Account(**{src: getattr(s, target) for src, target in PER_ACCOUNT.items()}, post_with=_method_from(s))
+        a = Account(**{src: getattr(s, target) for src, target in PER_ACCOUNT.items()})
         if (cache_dir() / LEGACY_BROWSER_PROFILE).is_dir():
             a.browser_profile = LEGACY_BROWSER_PROFILE
         if (app_dir() / LEGACY_TOKENS).is_file():

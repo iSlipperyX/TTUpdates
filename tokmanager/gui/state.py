@@ -37,6 +37,8 @@ class Job(QRunnable):
         self.fn = fn
         self.signals = JobSignals()
         self._cancel = False
+        self.started = False  # it left the pool's queue and is running
+        self.ended = threading.Event()  # set when fn has returned (before `done` is emitted)
         self.account_id = ""  # the TikTok account this job works for, if any
 
     def cancel(self) -> None:
@@ -52,6 +54,7 @@ class Job(QRunnable):
         self.signals.progress.emit(msg)
 
     def run(self) -> None:
+        self.started = True
         try:
             self.signals.succeeded.emit(self.fn(self))
         except Exception as exc:
@@ -62,6 +65,7 @@ class Job(QRunnable):
                 log_file.error("%s failed:\n%s", self.label, traceback.format_exc())
                 self.signals.failed.emit(str(exc) or name)
         finally:
+            self.ended.set()
             self.signals.done.emit()
 
 
@@ -97,9 +101,6 @@ class AppState(QObject):
         # One browser/TikTok action at a time: they share a browser profile and a login.
         self.tiktok_pool = QThreadPool(self)
         self.tiktok_pool.setMaxThreadCount(1)
-        # The live view's readings: plain HTTPS to TikTok's API, so they don't wait for the browser.
-        self.live_pool = QThreadPool(self)
-        self.live_pool.setMaxThreadCount(2)
         self.jobs: list[Job] = []
         self._save_timer = QTimer(self, singleShot=True, interval=800, timeout=self.store.save)
 
@@ -167,8 +168,24 @@ class AppState(QObject):
         from ..live import EventLog
 
         EventLog.remove(EventLog.path_for(a.id))  # its live activity feed
-        # A browser profile can be a few hundred MB; delete it without freezing the window.
-        threading.Thread(target=Accounts.delete_login, args=(a,), daemon=True).start()
+        # A browser profile can be a few hundred MB; delete it without freezing the window. A live
+        # reading that's queued or running is cancelled first: Edge holds the profile's files while it
+        # runs, and a reading that started after the delete would make the folder again.
+        running = []
+        for j in [j for j in self.jobs if j.account_id == a.id and j.kind == "live"]:
+            j.cancel()
+            if self.tiktok_pool.tryTake(j):  # still queued: it never opens the profile
+                self.jobs.remove(j)
+                self.jobs_changed.emit()
+            else:
+                running.append(j)
+
+        def delete() -> None:
+            for j in running:
+                j.ended.wait(120)
+            Accounts.delete_login(a)
+
+        threading.Thread(target=delete, daemon=True).start()
         self.log(f"Removed {a.label}.")
         if was_shown:
             self.account_switched.emit()
@@ -206,7 +223,7 @@ class AppState(QObject):
         job.signals.done.connect(lambda: self._finished(job))
         self.jobs.append(job)
         self.jobs_changed.emit()
-        {"tiktok": self.tiktok_pool, "live": self.live_pool}.get(pool, self.analysis_pool).start(job)
+        (self.tiktok_pool if pool == "tiktok" else self.analysis_pool).start(job)
         return job
 
     def _finished(self, job: Job) -> None:
@@ -224,6 +241,6 @@ class AppState(QObject):
                 continue
             j.cancel()
             # Jobs still waiting for a thread never run, so drop them here.
-            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j) or self.live_pool.tryTake(j):
+            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j):
                 self.jobs.remove(j)
         self.jobs_changed.emit()
