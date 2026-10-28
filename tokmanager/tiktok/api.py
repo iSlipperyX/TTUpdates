@@ -31,7 +31,9 @@ from ..vault import protect, unprotect
 
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 API = "https://open.tiktokapis.com/v2"
-SCOPES = ["user.info.basic", "user.info.profile", "user.info.stats", "video.list", "video.publish", "video.upload"]
+READ_SCOPES = ["user.info.basic", "user.info.profile", "user.info.stats", "video.list"]  # the live view, stats
+POST_SCOPES = ["video.publish", "video.upload"]  # only for accounts that post with the API (Content Posting API)
+SCOPES = READ_SCOPES + POST_SCOPES
 
 # What each scope is for, in the words Settings → TikTok API uses
 SCOPE_USES = {
@@ -170,16 +172,16 @@ class TikTokAPI:
 
     # --- OAuth ------------------------------------------------------------------
 
-    def authorize_url(self, state: str, challenge: str) -> str:
+    def authorize_url(self, state: str, challenge: str, scopes: list[str] | None = None) -> str:
         params = {
-            "client_key": self.s.api_client_key, "scope": ",".join(SCOPES), "response_type": "code",
+            "client_key": self.s.api_client_key, "scope": ",".join(scopes or SCOPES), "response_type": "code",
             "redirect_uri": self.redirect_uri, "state": state,
             "code_challenge": challenge, "code_challenge_method": "S256",
         }
         return AUTH_URL + "?" + urllib.parse.urlencode(params)
 
     def connect(self, timeout: float = 600, cancelled: Callable[[], bool] = lambda: False,
-                open_page: Callable[[str], Window | None] | None = None) -> None:
+                open_page: Callable[[str], Window | None] | None = None, scopes: list[str] | None = None) -> None:
         """Show TikTok's approval page and catch its redirect on localhost.
 
         `open_page(url)` opens it (the app uses the account's own browser profile, so the right
@@ -212,7 +214,8 @@ class TikTokAPI:
             raise ApiError(f"Port {self.s.api_redirect_port} is busy; pick another in Settings "
                            "(and add the matching redirect URI to your TikTok app).") from exc
         server.timeout = 1
-        url = self.authorize_url(state, challenge)
+        scopes = scopes or SCOPES  # TikTok refuses the page if it asks for one the app doesn't have
+        url = self.authorize_url(state, challenge, scopes)
         window = None
         closed_by_user = False
         try:
@@ -251,7 +254,7 @@ class TikTokAPI:
         self._token_request({"grant_type": "authorization_code", "code": result["code"],
                              "redirect_uri": self.redirect_uri, "code_verifier": verifier})
         granted = set(self.tokens.scope.split(","))
-        missing = [s for s in SCOPES if s not in granted]
+        missing = [s for s in scopes if s not in granted]
         if missing:
             self.log(f"⚠ TikTok didn't grant: {', '.join(missing)}. Some features won't work.")
         self.log("TikTok account connected.")
@@ -371,8 +374,10 @@ class TikTokAPI:
     def creator_info(self) -> dict:
         return self._call("POST", "/post/publish/creator_info/query/", body={})
 
-    def check(self, drafts: bool = False, audited: bool = False) -> tuple[str, list[str]]:
+    def check(self, drafts: bool = False, audited: bool = False, posting: bool = True) -> tuple[str, list[str]]:
         """Test the connection without posting: ("ok" | "warn", what was found, line by line).
+
+        `posting`: the account posts with the API, so the posting permissions are checked too.
 
         Raises ApiError when the API can't be used at all (no login, refused, wrong scopes).
         """
@@ -380,11 +385,16 @@ class TikTokAPI:
         p = self.profile()
         who = f"@{p.username}" if p.username else (p.nickname or "your account")
         lines.append(f"Connected as {who}" + (f" ({p.followers:,} followers)" if self.granted("user.info.stats") else ""))
-        missing = [s for s in SCOPES if not self.granted(s)]
+        missing = [s for s in (SCOPES if posting else READ_SCOPES) if not self.granted(s)]
         if missing:
             verdict = "warn"
             lines.append("Not allowed: " + ", ".join(SCOPE_USES.get(s, s) for s in missing) +
                          ". Connect again and leave every box ticked on TikTok's page.")
+        if not posting:
+            lines.append("Posts with the browser, so the API is only used to read (the live view and stats)")
+            days = (self.tokens.refresh_expires_at - time.time()) / 86400
+            lines.append(f"The API login lasts {int(days)} more days")
+            return verdict, lines
         need = "video.upload" if drafts else "video.publish"
         if not self.granted(need):
             raise ApiError(f"TikTok didn't allow {SCOPE_USES[need]} for this app. Check that the Content Posting "

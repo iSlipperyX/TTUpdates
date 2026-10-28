@@ -574,3 +574,58 @@ def test_an_api_poster_from_before_1_5_keeps_posting_publicly(tmp_path):
     data["api_post_mode"] = "inbox"
     path.write_text(json.dumps(data), encoding="utf-8")
     assert not Settings.load().api_audited
+
+
+def _approve(urls):
+    """A stand-in for TikTok's approval page: it redirects back with a code, like approving does."""
+    import urllib.parse
+    import urllib.request
+
+    class Window:
+        closed = False
+
+        def wait_closed(self):
+            self.closed = True
+
+    def open_page(url):
+        urls.append(url)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        back = f"{q['redirect_uri']}?code=c1&state={q['state']}"
+        threading.Timer(0.2, lambda: urllib.request.urlopen(back, timeout=5).read()).start()
+        return Window()
+
+    return open_page
+
+
+@pytest.mark.parametrize("post_with,asked", [("browser", "video.list"), ("api", "video.list,video.publish,video.upload")])
+def test_connect_asks_tiktok_only_for_what_the_account_needs(fake, monkeypatch, post_with, asked):
+    import socket
+    import urllib.parse
+
+    from tokmanager import tiktok
+    from tokmanager.tiktok import login
+
+    a = connected_account(post_with=post_with)
+    a.tokens_path().unlink()
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    urls = []
+    monkeypatch.setattr(login.BrowserWindow, "open", staticmethod(lambda s, folder, url: _approve(urls)(url)))
+    assert tiktok.connect_api(settings(api_redirect_port=port), a, lambda m: None, lambda: False) == "cats"
+    scope = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(urls[0]).query))["scope"]
+    assert scope.endswith(asked) and ("video.publish" in scope) == (post_with == "api")
+    assert methods.api_connected(a)
+
+
+def test_a_watch_only_connection_tests_fine_but_cant_post(fake):
+    from tokmanager import tiktok
+
+    a = connected_account()
+    Tokens(access_token="act-0", refresh_token="rft-0", scope="user.info.basic,user.info.profile,user.info.stats,video.list",
+           expires_at=time.time() + HOUR, refresh_expires_at=time.time() + 300 * 86400).save(a.tokens_path())
+    verdict, lines = tiktok.check_api(settings(), a, lambda m: None)
+    assert verdict == "ok" and any("only used to read" in line for line in lines)
+    a.post_with = "api_draft"
+    ok, why = methods.can_post(settings(), a)
+    assert not ok and "Connect API" in why

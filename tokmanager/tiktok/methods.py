@@ -60,6 +60,13 @@ def api_connected(a: Account) -> bool:
     return path.is_file() and Tokens.load(path).usable
 
 
+def granted_scopes(a: Account) -> set[str]:
+    from .api import Tokens
+
+    path = a.login_paths()[1]
+    return set(Tokens.load(path).scope.split(",")) if path.is_file() else set()
+
+
 def api_days_left(a: Account) -> float | None:
     """Days until the API login runs out (TikTok's refresh token lasts a year), None if not connected."""
     from .api import Tokens
@@ -80,6 +87,10 @@ def can_post(s: Settings, a: Account) -> tuple[bool, str]:
                        "Settings → TikTok API, or switch the account to Browser in Manage accounts.")
     if not api_connected(a):
         return False, f"{a.label} posts with the TikTok API, but it isn't connected. Press Connect API on the Account page."
+    need = "video.upload" if a.post_with == API_DRAFT else "video.publish"
+    if need not in granted_scopes(a):
+        return False, (f"{a.label} was connected to the TikTok API only for watching it. Press Connect API on the "
+                       "Account page again to allow posting (your developer app needs the Content Posting API).")
     if a.api_username and a.username and a.api_username.lstrip("@").lower() != a.username.lstrip("@").lower():
         return False, (f"{a.label}'s TikTok API connection is for @{a.api_username.lstrip('@')}, not @{a.username}. "
                        "Press Connect API on the Account page again, logged in as the right account.")

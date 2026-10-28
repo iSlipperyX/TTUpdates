@@ -284,6 +284,7 @@ class AccountPage(QWidget):
     def _refresh_api(self, connected: bool) -> None:
         a, s = self.state.active, self.state.settings
         self.api_status.setToolTip("")
+        self.api_connect_btn.setToolTip("")
         self.api_connect_btn.setVisible(not connected)
         self.api_test_btn.setVisible(connected)
         self.api_disconnect_btn.setVisible(connected)
@@ -303,6 +304,13 @@ class AccountPage(QWidget):
             self.api_connect_btn.style().unpolish(self.api_connect_btn)
             self.api_connect_btn.style().polish(self.api_connect_btn)
             return
+        need = "video.upload" if a.post_with == methods.API_DRAFT else "video.publish"
+        if methods.uses_api(a) and need not in methods.granted_scopes(a):
+            # Connected for watching only: connecting again asks TikTok for posting too
+            self.api_connect_btn.setVisible(True)
+            self.api_connect_btn.setText("Allow posting…")
+            self.api_connect_btn.setToolTip("This account posts with the API, but was connected only for watching. "
+                                            "Connect again to allow posting.")
         days = methods.api_days_left(a)
         who = f" as @{a.api_username}" if a.api_username else ""
         self.api_title.setText(f"Official TikTok API: connected{who}")

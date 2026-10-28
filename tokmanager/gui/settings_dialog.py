@@ -32,8 +32,8 @@ def api_steps_html(redirect_uri: str) -> str:
         "then <b>Confirm</b>). A sandbox works for your own accounts without TikTok's app review.",
         "In the sandbox's <b>App details</b>, add an icon, category and description, and tick <b>Desktop</b> "
         "under Platforms (if it asks for a website, your TikTok profile link will do).",
-        "Press <b>Add products</b> and add <b>Login Kit</b> and <b>Display API</b>, plus <b>Content Posting "
-        f"API</b> if you want to post with the API. In Login Kit, add the Desktop <b>Redirect URI</b> "
+        "Press <b>Add products</b> and add <b>Login Kit</b> and <b>Display API</b> (plus <b>Content Posting "
+        f"API</b> only if an account will post with the API). In Login Kit, add the Desktop <b>Redirect URI</b> "
         f"<code>{redirect_uri}</code> (Copy button below).",
         "Under <b>Scopes</b> (left side), add the permissions listed below, then press <b>Apply changes</b>.",
         "In <b>Sandbox settings</b> → <b>Target users</b>, press <b>Add account</b> and log in with each TikTok "
@@ -330,7 +330,7 @@ class SettingsDialog(QDialog):
 
     def _build_api_tab(self, tabs: QTabWidget, settings: Settings) -> None:
         from .. import live
-        from ..tiktok.api import SCOPES
+        from ..tiktok.api import POST_SCOPES, READ_SCOPES
 
         f = _form(tabs, "TikTok API", "Optional and free. TikTok's official API lets the Live page watch your "
                                       "accounts (views, likes, followers as they come in, no browser window) and "
@@ -375,9 +375,9 @@ class SettingsDialog(QDialog):
                                 "TikTok app works before the audit.")
         self.audited.setChecked(settings.api_audited)
         f.addRow("", self.audited)
-        f.addRow("Permissions", label("Tick these on your app's Scopes list: " + ", ".join(SCOPES) +
-                                      ". The two video.* posting ones are only needed to post with the API.",
-                                      "muted", wrap=True))
+        f.addRow("Permissions", label("Add these on your app's Scopes list: " + ", ".join(READ_SCOPES) +
+                                      ". To post with the API too, also add the Content Posting API and "
+                                      + " and ".join(POST_SCOPES) + ".", "muted", wrap=True))
         self.live_interval = _combo([(str(secs), text.capitalize()) for secs, text in live.INTERVALS],
                                     str(settings.live_interval))
         self.live_interval.setToolTip("How often the Live page reads each account you watch")

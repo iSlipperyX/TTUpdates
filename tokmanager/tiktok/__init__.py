@@ -112,11 +112,15 @@ def connect_api(s: Settings, account: Account, log: Callable[[str], None],
                 cancelled: Callable[[], bool]) -> str:
     """Connect the account to the official API: TikTok's approval page opens in the account's own
     browser profile (where it's already logged in to TikTok). Returns the approved @username."""
-    from .api import TikTokAPI
+    from . import methods
+    from .api import READ_SCOPES, SCOPES, TikTokAPI
     from .login import BrowserWindow
 
     api = TikTokAPI(s, account.tokens_path(), log)
-    api.connect(cancelled=cancelled, open_page=lambda url: BrowserWindow.open(s, account.browser_dir(), url))
+    # Only ask for posting when the account posts with the API: an app made just for the live view
+    # has no Content Posting API, and TikTok refuses the whole page over a permission the app lacks.
+    api.connect(cancelled=cancelled, open_page=lambda url: BrowserWindow.open(s, account.browser_dir(), url),
+                scopes=SCOPES if methods.uses_api(account) else READ_SCOPES)
     return api.profile().username
 
 
@@ -132,7 +136,7 @@ def check_api(s: Settings, account: Account, log: Callable[[str], None]) -> tupl
     from .api import TikTokAPI
 
     return TikTokAPI(s, account.tokens_path(), log).check(drafts=account.post_with == methods.API_DRAFT,
-                                                         audited=s.api_audited)
+                                                         audited=s.api_audited, posting=methods.uses_api(account))
 
 
 def check_upload(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],

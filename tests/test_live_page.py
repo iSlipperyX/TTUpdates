@@ -248,3 +248,17 @@ def test_videos_are_listed_newest_first_and_captions_show_as_written(made):
     page.refresh()
     assert [page.videos.item(r, 0).text() for r in range(3)] == ["banana <b>newest</b>", "apple", "zebra"]
     assert "&lt;b&gt;" in page.videos.item(0, 0).toolTip()
+
+
+def test_an_account_connected_only_for_watching_can_allow_posting(made):
+    from tokmanager.gui.account import AccountPage
+
+    st = made()
+    Tokens(access_token="act", refresh_token="rft", scope="user.info.basic,user.info.profile,user.info.stats,video.list",
+           expires_at=time.time() + 3600, refresh_expires_at=time.time() + 200 * 86400).save(st.active.tokens_path())
+    page = AccountPage(st)
+    page.show()
+    assert not page.api_connect_btn.isVisible()  # posts with the browser: watching is all it needs
+    st.active.post_with = "api"
+    page.refresh()
+    assert page.api_connect_btn.isVisible() and page.api_connect_btn.text() == "Allow posting…"
