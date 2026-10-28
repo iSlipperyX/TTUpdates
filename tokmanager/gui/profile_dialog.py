@@ -81,8 +81,8 @@ class ProfileDialog(QDialog):
         bio_row = QHBoxLayout()
         bio_row.addWidget(self.bio_count, 1)
         self.suggest_btn = QPushButton("✨ Suggest bios")
-        self.suggest_btn.setToolTip("Three bios written by Claude from this account's niche and recent captions "
-                                    "(needs the Anthropic API key in Settings → AI)")
+        self.suggest_btn.setToolTip("Three bios written by the AI from this account's niche and recent captions "
+                                    "(needs a Claude or Gemini key in Settings → AI)")
         self.suggest_btn.clicked.connect(self._suggest)
         bio_row.addWidget(self.suggest_btn)
         form.addRow("", bio_row)

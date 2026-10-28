@@ -11,7 +11,7 @@ from .vault import protect, unprotect
 
 APP_NAME = "TikTok Manager"
 APP_ID = "TikTokManager"
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 
 
 def app_dir() -> Path:
@@ -52,7 +52,7 @@ class Weights:
     audio: float = 0.15
     visual: float = 0.10
     source: float = 0.20  # ClipMonster's own clip score, when the video came from it
-    ai: float = 0.35  # Claude's rating, when AI scoring is on
+    ai: float = 0.35  # the AI's rating, when AI scoring is on
 
 
 @dataclass
@@ -62,9 +62,13 @@ class Settings:
     ideal_min_len: float = 21.0
     ideal_max_len: float = 45.0
     target_lufs: float = -14.0
-    # AI (optional)
-    ai_api_key: str = ""
+    # AI (optional, ai.py): Claude or Gemini, each with its own key and model
+    ai_provider: str = "claude"  # claude | gemini
+    ai_fallback: bool = True  # the chosen AI fails or has no key: ask the other one, if it has a key
+    ai_api_key: str = ""  # Anthropic's, for Claude
     ai_model: str = "claude-opus-5-5"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
     ai_niche: str = ""  # e.g. "podcast clips about startups", helps captions and scoring
     ai_hashtag_count: int = 4
     # Posting. default_privacy, default_hashtags, ai_niche, the schedule, autopilot and browser_logged_in
@@ -91,7 +95,7 @@ class Settings:
     watch_target: str = "library"  # library | spread (shared between accounts) | an account id
     setup_done: bool = False  # first-run setup finished (or skipped); existing installs count as done
     clipmonster_offered: str = ""  # the ClipMonster folder the app last offered to watch ("" = never asked)
-    watch_ai: bool = False  # AI caption each imported clip (one Claude call per clip)
+    watch_ai: bool = False  # AI caption each imported clip (one AI call per clip)
     watch_hashtags: bool = True  # AI hashtags for each imported clip (a quick text-only call, needs a key)
     remind_to_post: bool = True  # notify when a queued video's time comes (accounts with autopilot off)
     morning_summary: bool = True  # one notification a day: what's ready for each account
@@ -145,4 +149,4 @@ class Settings:
         safefile.save(self.path(), data)
 
 
-SECRET_FIELDS = ("ai_api_key",)
+SECRET_FIELDS = ("ai_api_key", "gemini_api_key")

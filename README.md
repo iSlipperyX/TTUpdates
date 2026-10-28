@@ -31,18 +31,23 @@ account the window is on; click it (or press **Ctrl+1…9**) to switch, or to ad
 - **Profile…** sets each account's **profile picture, name and bio**, and **Save and apply to TikTok**
   fills in TikTok's Edit profile box for you, then checks TikTok took it. TikTok lets a name change only
   once every 7 days; until then the picture and bio are still saved. **✨ Suggest bios** writes three
-  bios from the account's niche (needs the Anthropic API key).
+  bios from the account's niche (needs a Claude or Gemini key).
 
 ## Pages
 
 **Library**: drop in videos or whole folders. ClipMonster output folders bring their clip titles,
 scores and "why it was picked" notes along. Every video gets a 0–100 score with a letter grade,
 a breakdown, and concrete tips ("1.2 s of silence at the start: trim it"). Write the caption and
-hashtags here, or click **✨ AI caption** to have Claude watch the clip, rate it and write them.
+hashtags here, or click **✨ AI caption** to have the AI watch the clip, rate it and write them.
 **✨ Hashtags** writes just the hashtags (a quick text-only call): tags for the people, game or topic
 in the clip, fitted to the account's niche, leaning on the hashtags that got your posts the most views.
-No spam tags, and none the account already adds to every post. ClipMonster's Anthropic key is used
-when TikTok Manager has none of its own.
+No spam tags, and none the account already adds to every post.
+
+**The AI** is optional. Under *Settings → AI* choose **Claude** (an Anthropic API key, from
+console.anthropic.com) or **Gemini** (a Gemini API key, free from aistudio.google.com/apikey; Google may
+use what free keys send to improve its products), add its key and click **Test keys** (no tokens used).
+ClipMonster's keys are used when TikTok Manager has none of its own. With both keys and **If it fails,
+try the other AI** on, a call one AI can't answer (a used-up quota, busy servers) goes to the other.
 
 **Queue**: the order the shown account's videos will post in. Drag to reorder, or use **Sort by score** / **Smart order**
 (best first, never two clips from the same source video back to back). Set posts per day, the
@@ -56,7 +61,7 @@ the Ready page for an account you post to by hand, and on the Queue for one on a
 ClipMonster's hook (not its file name) with its caption, credit line and hashtags ready to copy.
 **Copy caption**, drag the file in from **Show file** (or **Open TikTok upload**), post it in TikTok,
 then click **Mark as posted** (there's an **Undo** for a few seconds). The top line counts what's
-waiting and what you've posted today. **✨ Hashtags** has Claude write a video's hashtags
+waiting and what you've posted today. **✨ Hashtags** has the AI write a video's hashtags
 (**✨ Hashtags for N** does every waiting video without any). **Not this one** sends a video back to
 the Library, and **Edit…** opens it on the Queue page. Without a phone folder, **Copy to a folder**
 copies the videos with a `.txt` caption beside each.
@@ -102,7 +107,7 @@ waiting), or all queued for one account.
   are left out, and a video you remove from the Library isn't brought back.
 - ClipMonster's **hook** becomes the starting caption, its AI rating and quality-check warnings show
   on the Ready page, and **Creative Commons** clips get a credit line (`🎥 Channel on YouTube (CC BY)`)
-  in their caption, which the licence requires. Tick **Write an AI caption** to have Claude write
+  in their caption, which the licence requires. Tick **Write an AI caption** to have the AI write
   one for each new clip instead.
 - **Niches.** A clip from a ClipMonster niche whose account name matches one of your accounts'
   usernames (with or without the @) is queued for that account, whatever the sharing rule says.
@@ -147,7 +152,7 @@ With more than one account, each gets its own subfolder.
 | Audio | Loudness vs about −14 LUFS, clipping; no audio caps the total at 45 |
 | Picture | Brightness, contrast, colour, sharpness, compression |
 | Clip finder | ClipMonster's own score, if the clip came from it |
-| AI rating | Claude's prediction of appeal and hook (optional) |
+| AI rating | The AI's prediction of appeal and hook (optional) |
 
 Weights are adjustable in **Settings → Scoring**.
 

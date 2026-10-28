@@ -35,10 +35,10 @@ class PostEditor(QWidget):
         head.addWidget(label("Post details", "h2"))
         head.addStretch(1)
         self.ai_btn = QPushButton("✨ AI caption")
-        self.ai_btn.setToolTip("Have Claude watch the clip, rate it and write a caption + hashtags")
+        self.ai_btn.setToolTip("Have the AI watch the clip, rate it and write a caption + hashtags")
         self.ai_btn.clicked.connect(self._ai)
         self.tags_btn = QPushButton("✨ Hashtags")
-        self.tags_btn.setToolTip("Just the hashtags: Claude reads what's known about the clip (quicker and cheaper "
+        self.tags_btn.setToolTip("Just the hashtags: the AI reads what's known about the clip (quicker and cheaper "
                                  "than a full AI caption) and replaces the hashtags below")
         self.tags_btn.clicked.connect(self._ai_tags)
         head.addWidget(self.tags_btn)
@@ -147,7 +147,7 @@ class PostEditor(QWidget):
             return
         s = self.state.settings
         if not has_key(s):
-            self.state.log("Add your Anthropic API key in Settings → AI first.")
+            self.state.log("Add a Claude or Gemini API key in Settings → AI first.")
             return
         item_id = self.item.id
         # A fresh request should replace the old caption suggestion, not keep the stale one.
@@ -176,7 +176,7 @@ class PostEditor(QWidget):
             return
         s = self.state.settings
         if not has_key(s):
-            self.state.log("Add your Anthropic API key in Settings → AI first.")
+            self.state.log("Add a Claude or Gemini API key in Settings → AI first.")
             return
         if self._save_timer.isActive():  # keep what was just typed in the caption
             self._save_timer.stop()

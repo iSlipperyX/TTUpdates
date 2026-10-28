@@ -71,7 +71,7 @@ class LibraryPage(QWidget):
         self.score_btn.setToolTip("Analyse the selected videos (or every unscored one if none is selected)")
         self.score_btn.clicked.connect(self.score_selected)
         self.ai_btn = QPushButton("✨ AI rate")
-        self.ai_btn.setToolTip("Claude rates the selected videos and writes captions (needs an API key)")
+        self.ai_btn.setToolTip("The AI rates the selected videos and writes captions (needs an API key)")
         self.ai_btn.clicked.connect(self.ai_selected)
         self.queue_btn = QPushButton("Add to queue →")
         self.queue_btn.clicked.connect(lambda: self.queue_selected())
@@ -446,11 +446,11 @@ class LibraryPage(QWidget):
         from ..ai import has_key
 
         if not has_key(s):
-            QMessageBox.information(self, "AI rating", "Add your Anthropic API key in Settings → AI to use AI rating.")
+            QMessageBox.information(self, "AI rating", "Add a Claude or Gemini API key in Settings → AI to use AI rating.")
             return
         ids = self.selected_ids()
         if len(ids) > 10 and QMessageBox.question(
-                self, "AI rating", f"Rate {len(ids)} videos with Claude? Each one is a separate API call.") != QMessageBox.Yes:
+                self, "AI rating", f"Rate {len(ids)} videos with the AI? Each one is a separate API call.") != QMessageBox.Yes:
             return
         for item_id in ids:
             item = self.state.store.get(item_id)

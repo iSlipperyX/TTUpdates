@@ -152,7 +152,7 @@ class ReadyCard(QFrame):
         busy = item.id in page.tagging
         self.ai_tags_btn = QPushButton("Writing…" if busy else "✨ Hashtags")
         self.ai_tags_btn.setEnabled(not busy)
-        self.ai_tags_btn.setToolTip("Claude writes hashtags that fit this clip and the account's niche, learning "
+        self.ai_tags_btn.setToolTip("The AI writes hashtags that fit this clip and the account's niche, learning "
                                     "from your best posts (replaces the clip's own hashtags)")
         self.ai_tags_btn.clicked.connect(lambda: page.ai_hashtags([item.id]))
         self.show_btn = QPushButton("Show file")
@@ -285,7 +285,7 @@ class ReadyPage(QWidget):
         self.state = state
         self.setObjectName("page")
         self._undo: tuple[str, str] | None = None  # (item id, account id) of the last "Mark as posted"
-        self.tagging: set[str] = set()  # items Claude is writing hashtags for
+        self.tagging: set[str] = set()  # items the AI is writing hashtags for
         self.current = ""  # id of the card the keys act on
         self._current_pos = 0  # its place, so the next card takes over when it leaves
         self._current_account = ""  # the account it belongs to: another account starts again at its first card
@@ -315,7 +315,7 @@ class ReadyPage(QWidget):
         self.take_btn.clicked.connect(self.take_new_clips)
         bar.addWidget(self.take_btn)
         self.all_tags_btn = QPushButton()
-        self.all_tags_btn.setToolTip("Claude writes hashtags for each waiting video that has none of its own "
+        self.all_tags_btn.setToolTip("The AI writes hashtags for each waiting video that has none of its own "
                                      "(one quick call per video)")
         self.all_tags_btn.clicked.connect(lambda: self.ai_hashtags([i.id for i in self._untagged()]))
         bar.addWidget(self.all_tags_btn)
@@ -537,11 +537,11 @@ class ReadyPage(QWidget):
         return [i for i in items if not i.hashtags.strip() and i.id not in self.tagging]
 
     def ai_hashtags(self, ids: list[str]) -> None:
-        """Have Claude write hashtags for these videos, one quick call each."""
+        """Have the AI write hashtags for these videos, one quick call each."""
         st = self.state
         if not ai.has_key(st.settings):
-            QMessageBox.information(self, "AI hashtags", "Add your Anthropic API key in Settings → AI (or in "
-                                    "ClipMonster) to have Claude write hashtags.")
+            QMessageBox.information(self, "AI hashtags", "Add a Claude or Gemini API key in Settings → AI (or in "
+                                    "ClipMonster) to have the AI write hashtags.")
             return
         from .. import jobs
 
