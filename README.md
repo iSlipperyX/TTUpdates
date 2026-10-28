@@ -141,6 +141,30 @@ With more than one account, each gets its own subfolder.
   folder. Accounts on autopilot are left out (they post themselves). The folder can even sit inside a
   watched folder: its copies aren't brought in again as new clips.
 
+## Niches
+
+When your clips cover more than one topic (ClipMonster's niches, like *Gaming Videos* and *Financial
+Advisor*), the **niche switcher** next to the account button shows one at a time. Pick **Gaming
+Videos** and the Library, Ready, Queue and Account pages show only gaming clips; **All niches** shows
+everything again. It only changes what you see: every queued video still posts at its time, and the
+phone folder keeps all of them. The menu counts each niche's videos, and the switcher only appears
+once the library has niches.
+
+- **Where a video's niche comes from**, first match wins: the niche you picked for it; ClipMonster's
+  word (its clips.json, or the list of videos it picked), under the niche's current name; a folder
+  it's in named after a niche (ClipMonster's `TTVIDEOS\Gaming Videos\…`); the other clips from its
+  folder; its channel being in a niche's channel list in ClipMonster, or the other clips from that
+  channel all being one niche; the account it's for being the one a niche posts to; and, for clips
+  from before ClipMonster had niches, its video coming from the YouTube charts when only one niche
+  takes chart videos. The Library's **Niche** column shows it, with why in its tooltip.
+- **Got one wrong?** Select videos in the Library, right-click → **Niche** and pick one, **New
+  niche…**, **No niche**, or **Work it out again**. What you pick wins over everything else.
+- **On each page:** the Ready page says how many more are waiting in other niches and **Queue N new
+  clips here** takes only the shown niche's. On the Queue, numbers are places in the whole queue, and
+  moving or sorting a niche's videos only swaps them between the places they already have, so the
+  other niches' videos keep their times. The Account page's views, median and both tables count only
+  that niche's posts (followers and likes are the whole account's).
+
 ## Cleaning up posted videos
 
 **🧹 Clean up…** (on the Library, or **Clean up posted videos…** on the Account page) frees the disk

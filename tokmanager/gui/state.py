@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import traceback
 from logging.handlers import RotatingFileHandler
 from typing import Any, Callable
@@ -11,6 +12,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .. import jobs as work
+from .. import niches
 from ..accounts import Account, Accounts
 from ..config import Settings, app_dir
 from ..store import Store, VideoItem
@@ -77,6 +79,7 @@ class AppState(QObject):
     message = Signal(str)  # log line for the activity panel
     phone_synced = Signal()  # the phone folder was updated (or couldn't be): phone_result / phone_error
     stats_changed = Signal(str)  # an account's TikTok numbers were read (account id), e.g. by the live view
+    niche_switched = Signal()  # the pages now show another niche (niche_filter)
 
     def __init__(self):
         super().__init__()
@@ -102,6 +105,12 @@ class AppState(QObject):
         self.tiktok_pool = QThreadPool(self)
         self.tiktok_pool.setMaxThreadCount(1)
         self.jobs: list[Job] = []
+        # The niche index (niches()), and whether something it's made from changed since
+        self._niche_index: niches.Index | None = None
+        self._niche_sig: tuple = ()
+        self._niche_dirty, self._niche_checked = True, 0.0
+        for sig in (self.library_changed, self.account_changed, self.account_switched):
+            sig.connect(self._niches_changed)
         self._save_timer = QTimer(self, singleShot=True, interval=800, timeout=self.store.save)
 
         # 2 MB per file, 3 old ones kept: about a month of normal use, and never more than 8 MB.
@@ -120,6 +129,54 @@ class AppState(QObject):
 
     def save_settings(self) -> None:
         self.settings.save()
+
+    # --- niches ---------------------------------------------------------------------
+
+    def niches(self) -> niches.Index:
+        """Which niche each video is in (niches.py), worked out again when the library, the accounts,
+        the watched folders or ClipMonster's niches change."""
+        # Asked for every row a page draws, so it's only looked at again after a change was signalled,
+        # or a couple of seconds on (for changes made without a signal, or in ClipMonster).
+        now = time.monotonic()
+        if self._niche_index is not None and not self._niche_dirty and now - self._niche_checked < 2:
+            return self._niche_index
+        cm = niches.clipmonster_info()
+        with self.store.lock:
+            sig = (cm.stamp, tuple(self.settings.watch_folders), tuple((a.id, a.username) for a in self.accounts),
+                   tuple((i.id, i.path, i.niche, i.niche_id, i.niche_set, i.account, i.source_channel)
+                         for i in self.store.items.values()))
+            if self._niche_index is None or self._niche_sig != sig:
+                self._niche_index = niches.Index(self.store.items.values(), self.accounts,
+                                                 self.settings.watch_folders, cm)
+                self._niche_sig = sig
+        self._niche_dirty, self._niche_checked = False, now
+        return self._niche_index
+
+    def _niches_changed(self) -> None:
+        self._niche_dirty = True
+
+    @property
+    def niche_filter(self) -> str:
+        """The niche the pages show: niches.ALL, niches.NONE or a niche key (one that's gone shows all)."""
+        want = self.settings.niche_filter
+        return want if self.niches().valid(want) else niches.ALL
+
+    def set_niche_filter(self, key: str) -> None:
+        if key == self.niche_filter:
+            return
+        self.settings.niche_filter = key
+        self.save_settings()
+        self.niche_switched.emit()
+
+    def in_niche(self, items: list[VideoItem]) -> list[VideoItem]:
+        """The videos the chosen niche shows (all of them when no niche is chosen)."""
+        want = self.niche_filter
+        return items if want == niches.ALL else self.niches().keep(items, want)
+
+    def niche_label(self) -> str:
+        """'Gaming' when a niche is chosen, 'No niche' for videos in none, "" for all."""
+        want = self.niche_filter
+        return "" if want == niches.ALL else "No niche" if want == niches.NONE else self.niches().name(want)
 
     # --- accounts -------------------------------------------------------------------
 

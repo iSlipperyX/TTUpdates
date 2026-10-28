@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import ai, jobs, phone, ready, safefile, updater
+from .. import ai, jobs, niches, phone, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
@@ -105,6 +105,15 @@ class MainWindow(QMainWindow):
         self.account_menu.aboutToShow.connect(self._fill_account_menu)
         self.account_btn.setMenu(self.account_menu)
         hl.addWidget(self.account_btn)
+        hl.addSpacing(6)
+        # Which niche (Gaming, Finance…) the pages show; only there once the library has niches (niches.py)
+        self.niche_btn = QPushButton()
+        self.niche_btn.setObjectName("nicheSwitch")
+        self.niche_btn.setMaximumWidth(220)
+        self.niche_menu = QMenu(self)
+        self.niche_menu.aboutToShow.connect(self._fill_niche_menu)
+        self.niche_btn.setMenu(self.niche_menu)
+        hl.addWidget(self.niche_btn)
         hl.addSpacing(10)
         self.nav = QButtonGroup(self)
         self.stack = QStackedWidget()
@@ -196,12 +205,15 @@ class MainWindow(QMainWindow):
         state.account_switched.connect(self._account_switched)
         state.account_changed.connect(self._update_account_button)
         state.library_changed.connect(self._update_account_button)
+        for sig in (state.library_changed, state.account_changed, state.niche_switched):
+            sig.connect(self._update_niche_button)
         for n in range(1, 10):  # Ctrl+1…9 shows account 1…9
             QShortcut(QKeySequence(f"Ctrl+{n}"), self, activated=lambda n=n: self._switch_to_number(n))
         self._warned_cant_post: set[str] = set()
         self._missing_folders: set[str] = set()
         self._setup = None  # the first-run setup window while it's open
         self._update_account_button()
+        self._update_niche_button()
         self.show_start_page()
 
         self._make_tray()
@@ -794,6 +806,49 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("＋ Add account…", self.add_account)
         m.addAction("Manage accounts…", self.manage_accounts)
+
+    def _update_niche_button(self) -> None:
+        st = self.state
+        index, want = st.niches(), st.niche_filter
+        self.niche_btn.setVisible(bool(index.niches) or want != niches.ALL)
+        name = st.niche_label() or "All niches"
+        self.niche_btn.setText(self.niche_btn.fontMetrics().elidedText(name, Qt.ElideRight, 170))
+        showing = ("every niche" if want == niches.ALL else "only videos with no niche" if want == niches.NONE
+                   else f"only “{name}” videos")
+        self.niche_btn.setToolTip(f"Showing {showing} on the Library, Ready, Queue and Account pages. Click to "
+                                  "pick another.\nThis only changes what you see: every queued video still posts "
+                                  "at its time.")
+        if self.niche_btn.property("filtered") != (want != niches.ALL):
+            self.niche_btn.setProperty("filtered", want != niches.ALL)
+            self.niche_btn.style().unpolish(self.niche_btn)
+            self.niche_btn.style().polish(self.niche_btn)
+
+    def _fill_niche_menu(self) -> None:
+        st = self.state
+        m = self.niche_menu
+        m.clear()
+        index, want = st.niches(), st.niche_filter
+        counts = index.counts(i for i in st.store.all() if not i.cleaned_at)
+        group = QActionGroup(m)
+
+        def add(key: str, text: str, n: int) -> None:
+            act = QAction(f"{text}\t{n}", m)
+            act.setCheckable(True)
+            act.setChecked(key == want)
+            act.triggered.connect(lambda _=False, k=key: st.set_niche_filter(k))
+            group.addAction(act)
+            m.addAction(act)
+
+        add(niches.ALL, "All niches", sum(counts.values()))
+        m.addSeparator()
+        for n in index.niches:
+            add(n.key, n.label, counts.get(n.key, 0))
+        if counts.get(niches.NONE) or want == niches.NONE:
+            m.addSeparator()
+            add(niches.NONE, "No niche", counts.get(niches.NONE, 0))
+        m.addSeparator()
+        how = m.addAction("Set a video's niche: right-click it in the Library")
+        how.setEnabled(False)
 
     def _switch_to_number(self, n: int) -> None:
         ids = self.state.accounts.ids()

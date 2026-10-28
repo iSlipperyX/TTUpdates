@@ -68,6 +68,10 @@ QPushButton#segFirst:checked, QPushButton#segMid:checked, QPushButton#segLast:ch
 QPushButton#accountSwitch {{ background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 16px; padding: 5px 12px 5px 6px; font-weight: 600; text-align: left; }}
 QPushButton#accountSwitch:hover {{ border-color: {ACCENT}; }}
 QPushButton#accountSwitch::menu-indicator {{ subcontrol-position: right center; subcontrol-origin: padding; right: 8px; }}
+QPushButton#nicheSwitch {{ background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 16px; min-height: 20px; padding: 5px 24px 5px 12px; font-weight: 600; text-align: left; }}
+QPushButton#nicheSwitch:hover {{ border-color: {ACCENT}; }}
+QPushButton#nicheSwitch[filtered="true"] {{ border-color: {ACCENT}; color: {ACCENT_2}; }}
+QPushButton#nicheSwitch::menu-indicator {{ subcontrol-position: right center; subcontrol-origin: padding; right: 8px; }}
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateTimeEdit, QTimeEdit {{
     background: {BG}; border: 1px solid {BORDER}; border-radius: 7px; padding: 5px 8px;

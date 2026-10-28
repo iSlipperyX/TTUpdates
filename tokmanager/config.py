@@ -112,6 +112,7 @@ class Settings:
     live_show_browser: bool = False  # show the window while reading (if TikTok keeps asking for a captcha)
     live_alerts: bool = True  # tray notifications: a video taking off, milestones, a queued clip seen on TikTok
     # Window
+    niche_filter: str = ""  # the niche the pages show (niches.py): "" = all, "-" = none, else a niche key
     minimize_to_tray: bool = True
     start_with_windows: bool = False
     last_folder: str = ""

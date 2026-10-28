@@ -107,6 +107,9 @@ class ReadyCard(QFrame):
             facts.append(f"AI {item.source_rating}/10")
         if item.source_channel:
             facts.append(f"from {_esc(item.source_channel)}")
+        niche = st.niches().name_of(item)
+        if niche and not st.niche_label():  # when every niche shows, say which this is
+            facts.append(f"🏷 {_esc(niche)}")
         if not item.exists():
             facts.append(f"<span style='color:{theme.BAD}'>file missing</span>")
         elif item.id in page.on_phone:
@@ -365,23 +368,29 @@ class ReadyPage(QWidget):
         state.account_switched.connect(self.refresh)
         state.account_changed.connect(self.refresh)
         state.phone_synced.connect(self.refresh)
+        state.niche_switched.connect(self.refresh)
         self.refresh()
 
     def refresh(self) -> None:
         st = self.state
         a = st.active
         st.replan()
-        items = ready.ready(st.store, a.id)
+        every = ready.ready(st.store, a.id)
+        items = st.in_niche(every)
+        niche = st.niche_label()
+        hidden = len(every) - len(items)  # waiting, but in another niche
         multi = len(st.accounts) > 1
         self.badge.setVisible(multi)
         self.badge.setPixmap(badge_for(a, 24))
         queued = [i for i in items if i.status == "queued"]
         today = dt.datetime.combine(dt.date.today(), dt.time.min).timestamp()
-        done = st.store.posts_since(today, a.id)
+        done = len(st.in_niche([i for i in st.store.posted(a.id) if (i.posted_at or 0) >= today]))
         text = f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued else \
             f"{len(items)} failed video{'s' * (len(items) != 1)} to look at" if items else \
             "All done for now" if done else "Nothing waiting"
-        self.summary.setText((f"{a.label}: " if multi else "") + text + (f" · {done} posted today ✓" if done else ""))
+        self.summary.setText((f"{a.label}: " if multi else "") + (f"{niche}: " if niche else "") + text +
+                             (f" · {done} posted today ✓" if done else "") +
+                             (f" · {hidden} more in other niches" if hidden else ""))
         folders = [f for f in st.settings.watch_folders if f]
         self._show_hint(folders)
         self._show_phone()
@@ -395,16 +404,21 @@ class ReadyPage(QWidget):
             more = f"New clips are waiting in the Library: press “{_esc(self.take_btn.text())}” to bring them here."
         else:
             more = "New clips show up here by themselves once ClipMonster (or you) put them in the watched folder."
-        self.empty.setText(f"Nothing is waiting for {_esc(a.label)}.<br>{more}")
+        if niche and hidden:
+            more = (f"{hidden} video{'s are' if hidden != 1 else ' is'} waiting in other niches: pick “All niches” "
+                    "at the top to see them.")
+        self.empty.setText(f"Nothing{f' from {_esc(niche)}' if niche else ''} is waiting for {_esc(a.label)}."
+                           f"<br>{more}")
         self.scroll.setVisible(bool(items))
         self.empty.setVisible(not items)
         self.keys_hint.setVisible(bool(items))
         untagged = self._untagged(items)
+        index = st.niches()
         self.all_tags_btn.setText(f"✨ Hashtags for {len(untagged)}")
         self.all_tags_btn.setVisible(len(untagged) > 1 and ai.has_key(st.settings))
         sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error,
-                i.id in self.tagging, i.id in self.on_phone, i.id in self.gone) for i in items]
-        sig.append((a.id, a.default_hashtags, st.settings.caption_template))
+                i.id in self.tagging, i.id in self.on_phone, i.id in self.gone, index.name_of(i)) for i in items]
+        sig.append((a.id, a.default_hashtags, st.settings.caption_template, st.niche_filter))
         ids = [i.id for i in items[:MAX_CARDS]]
         if a.id != self._current_account:
             self._current_account, self.current, self._current_pos = a.id, "", 0
@@ -462,7 +476,7 @@ class ReadyPage(QWidget):
         self.hint.setStyleSheet(f"color:{theme.WARN};" if warn else "")
         self.counts.setText(watch_summary(st.watch_reports, st.watch_checked_at) if folders else "")
         self.counts.setVisible(bool(self.counts.text()))
-        waiting = ready.unqueued_watched(st.store)
+        waiting = st.in_niche(ready.unqueued_watched(st.store))
         self.take_btn.setText(f"Queue {len(waiting)} new clip{'s' * (len(waiting) != 1)} here")
         self.take_btn.setVisible(bool(waiting))
 
@@ -533,7 +547,7 @@ class ReadyPage(QWidget):
 
     def _untagged(self, items: list[VideoItem] | None = None) -> list[VideoItem]:
         """Waiting videos without hashtags of their own (only the account's always-added ones)."""
-        items = ready.ready(self.state.store, self.state.active.id) if items is None else items
+        items = self.state.in_niche(ready.ready(self.state.store, self.state.active.id)) if items is None else items
         return [i for i in items if not i.hashtags.strip() and i.id not in self.tagging]
 
     def ai_hashtags(self, ids: list[str]) -> None:
@@ -566,7 +580,7 @@ class ReadyPage(QWidget):
         """Queue the watched folders' clips that are only in the Library for the shown account."""
         st = self.state
         a = st.active
-        waiting = ready.unqueued_watched(st.store)
+        waiting = st.in_niche(ready.unqueued_watched(st.store))  # only the shown niche's, when one is picked
         if not waiting:
             return
         best = sorted(waiting, key=lambda i: -(i.total if i.total is not None else i.source_score or 0))
@@ -658,7 +672,8 @@ class ReadyPage(QWidget):
         st = self.state
         a = st.active
         try:
-            folder, n = ready.export_ready(st.store, a, st.settings)
+            folder, n = ready.export_ready(st.store, a, st.settings,
+                                           items=st.in_niche(ready.ready(st.store, a.id)))
         except OSError as exc:
             QMessageBox.warning(self, "Copy to a folder", f"Couldn't copy the videos.\n\n{exc}")
             return
