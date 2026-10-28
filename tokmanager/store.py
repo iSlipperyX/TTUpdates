@@ -79,6 +79,9 @@ class VideoItem:
     # How it went up: "browser" (posted by the app; "api"/"api_draft" from 1.5.0), "hand" (marked posted on the
     # Ready page) or "seen" (the live view found it on TikTok); "" for posts before 1.5
     posted_via: str = ""
+    # Clean up (cleanup.py) deleted its files after it was posted: when, and the .txt record it left
+    cleaned_at: float | None = None
+    record: str = ""
 
     @property
     def total(self) -> float | None:
@@ -363,7 +366,8 @@ class Store:
                            analysis=deepcopy(src.analysis), score=deepcopy(src.score), ai=deepcopy(src.ai),
                            status="new", account="", queue_pos=None, pinned_at=None, planned_at=None,
                            attempts=0, last_error="", posted_at=None, tiktok_id="", tiktok_url="", publish_id="",
-                           posted_via="", warnings=list(src.warnings), reminded_at=None)
+                           posted_via="", warnings=list(src.warnings), reminded_at=None, cleaned_at=None,
+                           record="")
             self.items[copy.id] = copy
             self.enqueue([copy.id], account)
             return copy

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import os
 import statistics
 import time
 import webbrowser
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon
@@ -33,6 +35,7 @@ class AccountPage(QWidget):
     manage_requested = Signal(str)  # account id
     profile_requested = Signal(str)  # account id
     live_requested = Signal()  # show the Live page
+    cleanup_requested = Signal(str)  # account id: Clean up its posted videos
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -121,8 +124,14 @@ class AccountPage(QWidget):
         self.history.customContextMenuRequested.connect(self._history_menu)
         tabs.addTab(self.videos, "Videos on TikTok")
         tabs.addTab(self.history, "Posted from this app")
-        hint = label("Double-click a row to open it on TikTok.", "muted")
-        root.addWidget(hint)
+        foot = QHBoxLayout()
+        foot.addWidget(label("Double-click a row to open it on TikTok.", "muted"), 1)
+        self.cleanup_btn = QPushButton("🧹 Clean up posted videos…")
+        self.cleanup_btn.setToolTip("Free the space this account's posted videos take: a .txt record of each is "
+                                    "kept, then its files are deleted. You see the list and confirm first.")
+        self.cleanup_btn.clicked.connect(lambda: self.cleanup_requested.emit(self.state.active.id))
+        foot.addWidget(self.cleanup_btn)
+        root.addLayout(foot)
 
         self.state.account_changed.connect(self.refresh)
         self.state.account_switched.connect(self.refresh)
@@ -229,6 +238,8 @@ class AccountPage(QWidget):
         for r, it in enumerate(posted):
             v = st.video_for(it)
             status = {"posted": "Posted", "failed": "Failed", "queued": "Queued", "uploading": "Posting…"}.get(it.status, it.status)
+            if it.cleaned_at:
+                status = "Posted · cleaned up"
             detail = it.last_error if it.status == "failed" else (it.tiktok_url or ("Waiting for stats refresh to link"
                                                                                      if it.status == "posted" else ""))
             cells = [
@@ -360,7 +371,9 @@ class AccountPage(QWidget):
         m.addAction("Open TikTok Studio", lambda: webbrowser.open("https://www.tiktok.com/tiktokstudio/content"))
         if item.status == "failed":
             m.addAction("Put back in the queue", lambda: self.requeue_requested.emit(item.id))
-        if item.status == "posted":
+        if item.record and Path(item.record).is_file():
+            m.addAction("Open its record", lambda: os.startfile(item.record))  # noqa: S606 - opens in Notepad
+        if item.status == "posted" and item.exists():
             m.addAction("Post it again (re-queue)", lambda: self.requeue_requested.emit(item.id))
             others = [a for a in self.state.accounts if a.id != item.account]
             if others:

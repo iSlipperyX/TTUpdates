@@ -188,6 +188,8 @@ class MainWindow(QMainWindow):
         self.account.manage_requested.connect(self.manage_accounts)
         self.account.profile_requested.connect(self.edit_profile)
         self.account.live_requested.connect(lambda: self.show_page(self.live))
+        self.account.cleanup_requested.connect(self.open_cleanup)
+        self.library.cleanup_requested.connect(self.open_cleanup)
         self.live.login_requested.connect(lambda: self.login())
         self.live.settings_requested.connect(lambda: self.open_settings("Live"))
         self.live_monitor.alert.connect(lambda title, text: self._notify(title, text))
@@ -739,10 +741,20 @@ class MainWindow(QMainWindow):
         job.account_id = a.id
         st.run(job, pool="tiktok", on_success=done, on_failure=failed)
 
+    def open_cleanup(self, account_id: str = "") -> None:
+        from .cleanup_dialog import CleanupDialog
+
+        dlg = CleanupDialog(self.state, account_id, parent=self)
+        dlg.exec()
+        dlg.deleteLater()
+
     def requeue(self, item_id: str) -> None:
         st = self.state
         it = st.store.get(item_id)
         if not it:
+            return
+        if not it.exists():
+            self._log(f"“{it.headline}” can't go back in the queue: its video file was deleted.")
             return
         account = st.accounts.get(it.account) or st.active
         with st.store.lock:

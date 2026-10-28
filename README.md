@@ -141,6 +141,28 @@ With more than one account, each gets its own subfolder.
   folder. Accounts on autopilot are left out (they post themselves). The folder can even sit inside a
   watched folder: its copies aren't brought in again as new clips.
 
+## Cleaning up posted videos
+
+**🧹 Clean up…** (on the Library, or **Clean up posted videos…** on the Account page) frees the disk
+space your posted videos take. It lists every posted video with the space it frees, you tick the ones
+to clear, press **Clean up** and answer the question that follows. Nothing goes before that.
+
+- **A record first.** Each video gets a `.txt` in **Documents › TikTok Manager › Posted videos ›
+  <account>** (**Change…** picks another folder), e.g. `2026-10-25 15.00 - He quit live on air.txt`:
+  title, account, when and how it was posted, its TikTok link, its latest views, likes, comments and
+  shares, the caption, length, format, file, score and, for ClipMonster clips, the channel, source
+  link, niche, hook and why it was picked. If the record can't be written, the video is left alone.
+- **Then its files go:** the video, its thumbnail, ClipMonster's `.srt` and thumbnail for it (and its
+  row in the folder's `clips.json` and `README.md`; a video folder with no clips left goes, but never a
+  watched folder or a niche's folder), and the copies **Copy to a folder** made. The phone folder takes
+  posted clips out by itself.
+- **Safe by default.** Videos not yet seen on TikTok (not linked by a stats refresh) start unticked. A
+  file still queued for another account stays. **Posted more than N days ago** keeps recent ones, and
+  **Move to the Recycle Bin** lets you change your mind (the space is freed when you empty it).
+- **The history stays.** The video's post history and stats stay on the Account page (as *Posted ·
+  cleaned up*, right-click → **Open its record**), ClipMonster keeps learning from it, and the Library
+  lists it only under **Cleaned up**.
+
 ## How the score works
 
 | Part | What it measures |
