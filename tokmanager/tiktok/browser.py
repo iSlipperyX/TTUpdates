@@ -225,7 +225,7 @@ class TikTokBrowser:
                 self._check()
                 self._sleep(1.2)
                 if captcha_wait is not None and self._captcha_showing():  # it can come up as the grid loads
-                    self._wait_for_captcha(captcha_wait)
+                    self._wait_for_captcha(captcha_wait, stop_after=True)
                     still = 0
                 if len(videos) >= min(max_videos, profile.video_count or max_videos):
                     break
@@ -446,7 +446,9 @@ class TikTokBrowser:
         except Exception:  # noqa: BLE001 - the page navigated mid-check
             return False
 
-    def _wait_for_captcha(self, timeout: float = 300) -> None:
+    def _wait_for_captcha(self, timeout: float = 300, stop_after: bool = False) -> None:
+        """Wait while a captcha in the shown window is solved (a hidden one can't be: that stops). With
+        `stop_after`, a captcha still there after `timeout` stops too; otherwise the caller carries on."""
         if self._captcha_showing():
             if self.headless:
                 raise BrowserError("TikTok is asking for a captcha. Turn on 'Show the browser' and try again.")
@@ -454,7 +456,7 @@ class TikTokBrowser:
             end = time.time() + timeout
             while time.time() < end and self._captcha_showing():
                 self._sleep(1)
-            if self._captcha_showing():
+            if stop_after and self._captcha_showing():
                 raise BrowserError("TikTok's captcha wasn't solved in time.")
 
     def _caption_editor(self, timeout: float = 30):

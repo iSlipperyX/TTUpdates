@@ -533,7 +533,10 @@ def test_a_grid_refresh_keeps_what_only_the_full_reading_has(tmp_path):
     st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=1234, likes=80, comments=5, create_time=1e9, cover="c")])
     st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=1200)])  # off the grid: "1.2K", nothing else
     v = st.videos("A")["v1"]
-    assert (v.views, v.likes, v.comments, v.create_time, v.cover) == (1200, 80, 5, 1e9, "c")
+    assert (v.views, v.likes, v.comments, v.create_time, v.cover) == (1234, 80, 5, 1e9, "c")
+    assert [p[1] for p in v.history] == [1234, 1234]
+    st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=1300)])  # "1.3K": it did go up
+    assert st.videos("A")["v1"].views == 1300
 
 
 def test_a_login_that_ran_out_stops_an_account_without_a_username(fake):

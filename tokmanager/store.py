@@ -480,6 +480,7 @@ class Store:
                                                                         old.shares)
                         v.cover, v.duration = v.cover or old.cover, v.duration or old.duration
                         v.description = old.description or v.description
+                        v.views = max(v.views, old.views)  # "1.2K" isn't fewer views than 1,234
                 v.history = _add_point(v.history, [now, v.views, v.likes, v.comments, v.shares], spacing)[-60:]
                 known[v.id] = v
             self.link_posts(account)

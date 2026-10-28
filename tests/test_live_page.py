@@ -306,7 +306,8 @@ def test_a_login_that_ran_out_is_noticed_and_said(made, fake):
     assert mon.status(st.active).state == "live"  # still read through the public profile
 
 
-def test_removing_an_account_cancels_its_reading_and_deletes_its_profile_after(made, fake, monkeypatch):
+@pytest.mark.parametrize("then", ["nothing", "cancel_all"])
+def test_a_removed_accounts_profile_is_deleted_whatever_happens_to_its_queued_reading(made, fake, monkeypatch, then):
     from tokmanager.accounts import Accounts
     from tokmanager.gui.state import Job
 
@@ -316,11 +317,26 @@ def test_removing_an_account_cancels_its_reading_and_deletes_its_profile_after(m
     deleted = []
     monkeypatch.setattr(Accounts, "delete_login", staticmethod(lambda a: deleted.append(a.id)))
     mon, page = page_for(st)
-    blocker = Job("Posting", lambda j: time.sleep(0.4), kind="post")  # keeps the tiktok pool busy
-    st.run(blocker, pool="tiktok", quiet=True)
+    st.run(Job("Posting", lambda j: time.sleep(0.4), kind="post"), pool="tiktok", quiet=True)
     mon.check_now(b.id)
     st.remove_account(b.id)
-    QTest.qWait(100)
-    assert not deleted  # the reading hasn't let go of the profile yet
-    assert wait_for(lambda: deleted == [b.id])
-    assert all(o["profile_dir"] != b.browser_dir() for o in fake.opened)  # the queued reading never opened it
+    if then == "cancel_all":
+        st.cancel_all()
+    assert wait_for(lambda: deleted == [b.id]) and not any(j.kind == "live" for j in st.jobs)
+
+
+def test_removing_an_account_while_its_reading_runs_deletes_after_it_ends(made, monkeypatch):
+    from tokmanager.accounts import Accounts
+    from tokmanager.gui.state import Job
+
+    st = made()
+    b = st.accounts.add("")
+    deleted = []
+    monkeypatch.setattr(Accounts, "delete_login", staticmethod(lambda a: deleted.append(time.time())))
+    j = Job("Reading", lambda j: time.sleep(0.5), kind="live")
+    j.account_id = b.id
+    st.run(j, pool="tiktok", quiet=True)
+    assert wait_for(lambda: j.started)
+    st.remove_account(b.id)
+    assert wait_for(lambda: deleted)
+    assert j.ended.is_set()
