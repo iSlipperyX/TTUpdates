@@ -103,6 +103,10 @@ class Settings:
     phone_folder: str = ""  # phone hand-off (phone.py): today's clips kept here, e.g. OneDrive\TikTok Ready; "" = off
     last_summary_day: str = ""
     share_results: bool = True  # results.py: tell ClipMonster how its clips did (results.json)
+    # Clean up (cleanup.py): posted videos' files go, a .txt record of each stays
+    cleanup_folder: str = ""  # "" = Documents\TikTok Manager\Posted videos
+    cleanup_days: int = 0  # only videos posted at least this many days ago (0 = any)
+    cleanup_trash: bool = False  # to the Recycle Bin rather than deleted for good
     # Live view (live.py): logged-in accounts' profile pages are read this often (seconds), in the background
     live_interval: int = 300
     live_show_browser: bool = False  # show the window while reading (if TikTok keeps asking for a captcha)

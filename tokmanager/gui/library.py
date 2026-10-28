@@ -6,7 +6,7 @@ import datetime as dt
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLineEdit, QMenu,
                                QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
@@ -50,6 +50,8 @@ def format_label(info: dict) -> str:
 
 
 class LibraryPage(QWidget):
+    cleanup_requested = Signal()  # open Clean up for posted videos
+
     def __init__(self, state: AppState):
         super().__init__()
         self.state = state
@@ -79,6 +81,10 @@ class LibraryPage(QWidget):
         self.remove_btn.setObjectName("danger")
         self.remove_btn.setToolTip("Remove from the library (the files on disk are not touched)")
         self.remove_btn.clicked.connect(self.remove_selected)
+        self.cleanup_btn = QPushButton("🧹 Clean up…")
+        self.cleanup_btn.setToolTip("Free the space posted videos take: a .txt record of each is kept, then its "
+                                    "files are deleted. You see the list and confirm first.")
+        self.cleanup_btn.clicked.connect(self.cleanup_requested.emit)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search…")
         self.search.setClearButtonEnabled(True)
@@ -87,7 +93,8 @@ class LibraryPage(QWidget):
         self.filter = QComboBox()
         self._fill_filter()
         self.filter.currentIndexChanged.connect(self.refresh)
-        for w in (add_files, add_folder, self.score_btn, self.ai_btn, self.queue_btn, self.remove_btn):
+        for w in (add_files, add_folder, self.score_btn, self.ai_btn, self.queue_btn, self.remove_btn,
+                  self.cleanup_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.filter)
@@ -146,7 +153,7 @@ class LibraryPage(QWidget):
         self.filter.blockSignals(True)
         self.filter.clear()
         for key, text in (("all", "All videos"), ("new", "Not queued"), ("queued", "Queued"), ("posted", "Posted"),
-                          ("failed", "Failed"), ("unscored", "Not scored")):
+                          ("failed", "Failed"), ("unscored", "Not scored"), ("cleaned", "Cleaned up")):
             self.filter.addItem(text, key)
         if len(self.state.accounts) > 1:
             self.filter.insertSeparator(self.filter.count())
@@ -241,7 +248,10 @@ class LibraryPage(QWidget):
         facts.append(self._status_text(item))
         if item.source_reason:
             facts.append(f"Clip finder: “{item.source_reason}”")
-        if not item.exists():
+        if item.cleaned_at:
+            facts.append(f"cleaned up {dt.datetime.fromtimestamp(item.cleaned_at):%d %b %Y}: its files were deleted "
+                         "and a record of it kept (right-click → Open its record)")
+        elif not item.exists():
             # ClipMonster's Clean up deletes posted clips' files; the post and its stats stay here
             facts.append("file deleted after posting (its stats are kept)" if item.status == "posted"
                          else "⚠ file missing")
@@ -263,12 +273,14 @@ class LibraryPage(QWidget):
         q = self.search.text().strip().lower()
         out = []
         for it in self.state.store.all():
+            if bool(it.cleaned_at) != (f == "cleaned"):  # cleaned-up posts only show under their own filter
+                continue
             if f == "unscored" and it.score:
                 continue
             if f.startswith("account:"):
                 if it.account != f[8:]:
                     continue
-            elif f not in ("all", "unscored") and it.status != f:
+            elif f not in ("all", "unscored", "cleaned") and it.status != f:
                 continue
             if q and q not in it.name.lower() and q not in it.caption.lower() and q not in it.path.lower():
                 continue
@@ -321,6 +333,8 @@ class LibraryPage(QWidget):
     def _status_text(self, it: VideoItem) -> str:
         """'Queued' or, with several accounts, 'Queued · @name' so you can see whose queue it's in."""
         text = STATUS_TEXT.get(it.status, it.status)
+        if it.cleaned_at:
+            text = "Cleaned up"
         if it.account and it.status != "new" and len(self.state.accounts) > 1:
             text += f" · {self.state.accounts.label_for(it.account)}"
         return text
@@ -375,7 +389,7 @@ class LibraryPage(QWidget):
         items = [self.state.store.get(i) for i in ids]
         if len(self.state.accounts) > 1:
             fresh = any(it and it.status == "new" for it in items)
-            posted = [it.id for it in items if it and it.status == "posted"]
+            posted = [it.id for it in items if it and it.status == "posted" and it.exists()]
             queue_for = m.addMenu("Add to the queue of")
             queue_for.setEnabled(fresh)
             also = m.addMenu("Also post to")
@@ -389,6 +403,10 @@ class LibraryPage(QWidget):
             m.addAction("Add to queue", self.queue_selected)
         m.addAction("Re-score", lambda: self.score(ids, force=True))
         m.addAction("AI rate", self.ai_selected)
+        records = [it.record for it in items if it and it.record and Path(it.record).is_file()]
+        if records:
+            m.addAction("Open its record" if len(records) == 1 else "Open the first record",
+                        lambda: os.startfile(records[0]))  # noqa: S606 - opens in Notepad
         m.addSeparator()
         m.addAction("Remove from library", self.remove_selected)
         m.exec(self.table.viewport().mapToGlobal(pos))
