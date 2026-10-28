@@ -39,6 +39,16 @@ class VideoItem:
     warnings: list[str] = field(default_factory=list)  # ClipMonster's quality check notes
     credit: str = ""  # a line the caption must carry (Creative Commons credit)
     imported_by: str = ""  # "watch" when a watched folder brought it in
+    # ClipMonster 2.3+ sorts clips into niches, one TikTok account each (clips.json "automation")
+    niche: str = ""  # the niche's name, e.g. "Gaming"
+    niche_id: str = ""  # stable across renames; shared back in results.json
+    for_account: str = ""  # the TikTok @username the niche is for ("" = none named)
+    # ClipMonster 2.4+ part series: one moment cut into parts, each but the last saying "follow for part 2".
+    # `series` is unique across the library: ClipMonster's id is only unique within one clips folder, and
+    # the same video can be clipped into several folders (one per niche, or a later run), so it's keyed on it.
+    series: str = ""
+    part: int | None = None  # 1-based
+    parts: int | None = None  # how many parts ClipMonster kept
     reminded_at: float | None = None  # when the "time to post" reminder went out
     # Analysis + score
     info: dict = field(default_factory=dict)
@@ -66,6 +76,9 @@ class VideoItem:
     tiktok_id: str = ""
     tiktok_url: str = ""
     publish_id: str = ""
+    # How it went up: "browser" | "api" | "api_draft" (posted by the app), "hand" (marked posted on the
+    # Ready page) or "seen" (the live view found it on TikTok); "" for posts before 1.5
+    posted_via: str = ""
 
     @property
     def total(self) -> float | None:
@@ -84,6 +97,13 @@ class VideoItem:
         """What to call the clip where you pick and post it: ClipMonster's hook when it wrote one
         (rather than a file name like "01 - 1-37 - clip"), else the title."""
         return " ".join(self.hook.split()) or self.name
+
+    @property
+    def part_label(self) -> str:
+        """'Part 2 of 3' for a clip in a part series, else ""."""
+        if not self.series or not self.part:
+            return ""
+        return f"Part {self.part} of {self.parts}" if self.parts else f"Part {self.part}"
 
     def exists(self) -> bool:
         return Path(self.path).is_file()
@@ -111,9 +131,16 @@ class TikTokVideo:
         return (self.likes + self.comments + self.shares + self.saves) / self.views * 100 if self.views else 0.0
 
     def views_change(self) -> int | None:
-        if len(self.history) < 2:
+        h = self.history
+        if len(h) < 2:
             return None
-        return int(self.history[-1][1] - self.history[-2][1])
+        # The live view keeps updating the newest point until it's half an hour after the one before;
+        # until then compare with the point before that, so this is never just a minute's change.
+        base = h[-3] if len(h) >= 3 and h[-1][0] - h[-2][0] < LATELY else h[-2]
+        return int(h[-1][1] - base[1])
+
+
+LATELY = 30 * 60  # "views lately" covers at least this long when the history allows (live.HISTORY_SPACING)
 
 
 @dataclass
@@ -128,6 +155,7 @@ class Profile:
     video_count: int = 0
     fetched_at: float = 0.0
     history: list[list[float]] = field(default_factory=list)  # [fetched_at, followers, likes, videos]
+    has_stats: bool = True  # False: the numbers weren't read (an API login without user.info.stats)
 
 
 @dataclass
@@ -295,6 +323,12 @@ class Store:
                     item.hook = meta.get("hook", "")
                     item.caption = item.hook
                     item.warnings = list(meta.get("warnings") or [])
+                    item.niche = meta.get("niche", "")
+                    item.niche_id = meta.get("niche_id", "")
+                    item.for_account = meta.get("account", "")
+                    if meta.get("series"):
+                        item.series = f"{f.parent.resolve()}#{meta['series']}"
+                        item.part, item.parts = meta.get("part"), meta.get("parts")
                     if needs_credit(meta):
                         item.credit = credit_line(item.source_channel)
                 else:
@@ -329,7 +363,7 @@ class Store:
                            analysis=deepcopy(src.analysis), score=deepcopy(src.score), ai=deepcopy(src.ai),
                            status="new", account="", queue_pos=None, pinned_at=None, planned_at=None,
                            attempts=0, last_error="", posted_at=None, tiktok_id="", tiktok_url="", publish_id="",
-                           warnings=list(src.warnings), reminded_at=None)
+                           posted_via="", warnings=list(src.warnings), reminded_at=None)
             self.items[copy.id] = copy
             self.enqueue([copy.id], account)
             return copy
@@ -425,23 +459,41 @@ class Store:
     def videos(self, account: str) -> dict[str, TikTokVideo]:
         return self.stats_for(account).tiktok_videos
 
-    def update_tiktok_videos(self, account: str, videos: list[TikTokVideo]) -> None:
-        now = time.time()
+    def update_tiktok_videos(self, account: str, videos: list[TikTokVideo], now: float | None = None,
+                             spacing: float = 0.0) -> None:
+        """Store what was read of the account's videos, each with a point added to its history.
+
+        `spacing` is for the live view, which reads every minute or so: the newest point is then
+        updated in place until it is `spacing` seconds after the one before it, so the 60 points
+        kept still cover days rather than an hour.
+        """
+        now = time.time() if now is None else now
         with self.lock:
             known = self.videos(account)
             for v in videos:
                 old = known.get(v.id)
                 if old:
                     v.history = old.history
-                v.history = (v.history + [[now, v.views, v.likes, v.comments, v.shares]])[-60:]
+                    v.saves = v.saves or old.saves  # the API doesn't give saves; the browser does
+                v.history = _add_point(v.history, [now, v.views, v.likes, v.comments, v.shares], spacing)[-60:]
                 known[v.id] = v
             self.link_posts(account)
 
-    def update_profile(self, account: str, p: Profile) -> None:
+    def update_profile(self, account: str, p: Profile, now: float | None = None, spacing: float = 0.0) -> None:
+        now = time.time() if now is None else now
         with self.lock:
             st = self.stats_for(account)
-            p.history = (st.profile.history + [[time.time(), p.followers, p.likes, p.video_count]])[-120:]
+            if not p.has_stats:  # keep the numbers the last full reading (or the browser) found
+                old = st.profile
+                p.followers, p.following, p.likes, p.video_count = old.followers, old.following, old.likes, \
+                    old.video_count
+                p.has_stats = bool(old.fetched_at) and old.has_stats
+                p.history = list(old.history)
+            else:
+                p.history = _add_point(st.profile.history, [now, p.followers, p.likes, p.video_count],
+                                       spacing)[-120:]
             p.username = p.username or st.profile.username
+            p.bio = p.bio or st.profile.bio
             st.profile = p
 
     def link_posts(self, account: str) -> None:
@@ -487,6 +539,14 @@ class Store:
         if not item.tiktok_id or item.account not in self.stats:
             return None
         return self.stats[item.account].tiktok_videos.get(item.tiktok_id)
+
+
+def _add_point(history: list[list[float]], point: list[float], spacing: float) -> list[list[float]]:
+    """`history` with `point` added, or with its newest point replaced by it while that one is less
+    than `spacing` seconds newer than the point before it."""
+    if spacing and len(history) >= 2 and history[-1][0] - history[-2][0] < spacing:
+        return history[:-1] + [point]
+    return history + [point]
 
 
 def _key(path) -> str:

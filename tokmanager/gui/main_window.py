@@ -20,10 +20,13 @@ from .. import ai, jobs, phone, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
+from ..tiktok import methods
 from . import theme
 from .account import AccountPage
 from .accounts_dialog import AccountsDialog, account_status
 from .library import LibraryPage
+from .live_monitor import LiveMonitor
+from .live_page import LivePage
 from .login_dialog import LoginDialog
 from .profile_dialog import ProfileDialog
 from .queue_page import QueuePage
@@ -109,9 +112,13 @@ class MainWindow(QMainWindow):
         self.library = LibraryPage(state)
         self.ready = ReadyPage(state)
         self.queue = QueuePage(state)
+        # The live view reads accounts connected to TikTok's API on its own timer (live.py)
+        self.live_monitor = LiveMonitor(state)
+        self.live = LivePage(state, self.live_monitor)
         self.account = AccountPage(state)
         self.nav_buttons: list[QPushButton] = []
-        pages = (("Library", self.library), ("Ready", self.ready), ("Queue", self.queue), ("Account", self.account))
+        pages = (("Library", self.library), ("Ready", self.ready), ("Queue", self.queue), ("Live", self.live),
+                 ("Account", self.account))
         for i, (text, page) in enumerate(pages):
             b = QPushButton(text)
             b.setObjectName("nav")
@@ -181,6 +188,13 @@ class MainWindow(QMainWindow):
         self.account.requeue_requested.connect(self.requeue)
         self.account.manage_requested.connect(self.manage_accounts)
         self.account.profile_requested.connect(self.edit_profile)
+        self.account.connect_api_requested.connect(self.connect_api)
+        self.account.disconnect_api_requested.connect(self.disconnect_api)
+        self.account.api_check_requested.connect(self.check_api)
+        self.account.live_requested.connect(lambda: self.show_page(self.live))
+        self.live.connect_requested.connect(self.connect_api)
+        self.live.setup_requested.connect(lambda: self.open_settings("TikTok API"))
+        self.live_monitor.alert.connect(lambda title, text: self._notify(title, text))
         state.account_switched.connect(self._account_switched)
         state.account_changed.connect(self._update_account_button)
         state.library_changed.connect(self._update_account_button)
@@ -238,6 +252,9 @@ class MainWindow(QMainWindow):
         if safefile.notices:
             QTimer.singleShot(600, self._show_recovered)
 
+    def show_page(self, page: QWidget) -> None:
+        self.nav_buttons[self.stack.indexOf(page)].click()
+
     def show_start_page(self) -> None:
         """The page for how the shown account posts: Ready (by hand) or Queue (autopilot). The Library when
         it's empty and no folder is watched, so there's somewhere to drop the first clips."""
@@ -272,7 +289,7 @@ class MainWindow(QMainWindow):
         self.log_toggle.setText(("▾" if vis else "▸") + " Activity")
 
     def _jobs_changed(self) -> None:
-        jobs_ = [j for j in self.state.jobs if j.kind not in ("update", "watch", "phone")]  # background work stays quiet
+        jobs_ = [j for j in self.state.jobs if j.kind not in ("update", "watch", "phone", "live")]  # background work stays quiet
         if not jobs_:
             self.job_label.setText("")
             self.job_bar.hide()
@@ -323,7 +340,7 @@ class MainWindow(QMainWindow):
             st.library_changed.emit()
 
         def fail(msg):
-            if "log in" in msg.lower() and st.settings.upload_method == "browser":
+            if "log in" in msg.lower() and not methods.uses_api(account):
                 account.logged_in = False
                 st.save_accounts()
                 st.account_changed.emit()
@@ -518,7 +535,7 @@ class MainWindow(QMainWindow):
                 continue
             if any(i.status == "queued" and i.planned_at and i.planned_at <= time.time() for i in st.store.queue(a.id)):
                 self._warned_cant_post.add(a.id)
-                msg = f"Autopilot is on for {a.handle}, but it isn't logged in. Log in on the Account page."
+                msg = f"Autopilot is on for {a.handle}, but it can't post: {methods.can_post(st.settings, a)[1]}"
                 self._log(f"⚠ {msg}")
                 self._notify("Autopilot can't post", msg, error=True)
 
@@ -532,36 +549,29 @@ class MainWindow(QMainWindow):
         over = parent or self
         result: dict = {}
         # Always the main window's own, shown over `parent`: closing setup mid-login mustn't take it along.
-        dialog = None if s.upload_method == "api" else LoginDialog(self, a.label, lambda: job.cancel())
+        dialog = LoginDialog(self, a.label, lambda: job.cancel())
 
         def box_parent() -> QWidget:
             return over if shiboken6.isValid(over) and over.isVisible() else self
 
         def work(j: Job):
-            if s.upload_method == "api":
-                from ..tiktok.api import TikTokAPI
+            from ..tiktok.browser import TikTokBrowser
+            from ..tiktok.login import login_window
 
-                api = TikTokAPI(s, a.tokens_path(), j.log)
-                api.connect(cancelled=j.cancelled)
-                name = api.profile().username
-            else:
-                from ..tiktok.browser import TikTokBrowser
-                from ..tiktok.login import login_window
-
-                # A plain browser window: TikTok refuses logins in an automated one ("Too many attempts").
-                if not login_window(s, a.browser_dir(), j.log, j.cancelled, finish=dialog.finish.is_set):
-                    j.log("Couldn't find Edge or Chrome to open by itself; using the app's browser window.")
-                    with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
-                        if not b.login():
-                            raise RuntimeError("Login wasn't completed.")
-                j.log("Checking the login…")
-                with TikTokBrowser(s, a.browser_dir(), j.log, headless=True, cancelled=j.cancelled) as b:
-                    if not b.logged_in():
-                        a.logged_in = False
-                        raise RuntimeError("TikTok's login wasn't saved in that window. Press Log in again, "
-                                           "log in there and wait for your feed to appear.")
-                    a.logged_in = True
-                    name = b.whoami()
+            # A plain browser window: TikTok refuses logins in an automated one ("Too many attempts").
+            if not login_window(s, a.browser_dir(), j.log, j.cancelled, finish=dialog.finish.is_set):
+                j.log("Couldn't find Edge or Chrome to open by itself; using the app's browser window.")
+                with TikTokBrowser(s, a.browser_dir(), j.log, headless=False, cancelled=j.cancelled) as b:
+                    if not b.login():
+                        raise RuntimeError("Login wasn't completed.")
+            j.log("Checking the login…")
+            with TikTokBrowser(s, a.browser_dir(), j.log, headless=True, cancelled=j.cancelled) as b:
+                if not b.logged_in():
+                    a.logged_in = False
+                    raise RuntimeError("TikTok's login wasn't saved in that window. Press Log in again, "
+                                       "log in there and wait for your feed to appear.")
+                a.logged_in = True
+                name = b.whoami()
             if name:
                 if a.username and a.username.lower() != name.lower():
                     j.log(f"⚠ {a.label} was @{a.username}; it's now logged in as @{name}.")
@@ -574,10 +584,10 @@ class MainWindow(QMainWindow):
             jobs.refresh_account(st.store, s, a, j.log, j.cancelled)
 
         def finished(_=None):
-            if dialog is not None:
-                dialog.end()
+            dialog.end()
             st.save_accounts()
             st.accounts_edited()
+            st.stats_changed.emit(a.id)
             if result.get("duplicate"):
                 QMessageBox.warning(box_parent(), "Same TikTok account twice",
                                     f"@{a.username} is also added as “{result['duplicate']}”. Both entries would post "
@@ -591,29 +601,24 @@ class MainWindow(QMainWindow):
 
         job = Job(f"Logging {a.label} in to TikTok", work, kind="login")
         job.account_id = a.id
-        if dialog is not None:
-            job.signals.log.connect(dialog.show_line)
-            dialog.show()
-            if over is not self:
-                dialog.move(over.frameGeometry().center() - dialog.rect().center())
+        job.signals.log.connect(dialog.show_line)
+        dialog.show()
+        if over is not self:
+            dialog.move(over.frameGeometry().center() - dialog.rect().center())
         st.run(job, pool="tiktok", on_success=finished, on_failure=failed)
 
     def logout(self) -> None:
+        """Log the shown account's browser profile out of TikTok (its API connection, if any, stays)."""
         st = self.state
         s = st.settings
         a = st.active
 
         def work(j: Job):
-            if s.upload_method == "api":
-                from ..tiktok.api import TikTokAPI
+            from ..tiktok.browser import TikTokBrowser
 
-                TikTokAPI(s, a.tokens_path(), j.log).disconnect()
-            else:
-                from ..tiktok.browser import TikTokBrowser
-
-                with TikTokBrowser(s, a.browser_dir(), j.log, headless=True) as b:
-                    b.logout()
-                a.logged_in = False
+            with TikTokBrowser(s, a.browser_dir(), j.log, headless=True) as b:
+                b.logout()
+            a.logged_in = False
             j.log(f"Logged {a.handle} out of TikTok.")
 
         job = Job(f"Logging {a.label} out", work, kind="login")
@@ -629,7 +634,131 @@ class MainWindow(QMainWindow):
                   lambda j: jobs.refresh_account(st.store, st.settings, a, j.log, j.cancelled), kind="account")
         job.account_id = a.id
         st.run(job, pool="tiktok", on_success=lambda _: (st.save_accounts(), st.account_changed.emit(),
-                                                         st.library_changed.emit()))
+                                                         st.stats_changed.emit(a.id), st.library_changed.emit()))
+
+    # --- the official TikTok API ------------------------------------------------------
+
+    def connect_api(self) -> None:
+        """Connect the shown account to TikTok's official API (for the live view and API posting)."""
+        st = self.state
+        s = st.settings
+        a = st.active
+        if not methods.app_ready(s):
+            if QMessageBox.question(self, "Connect API", "TikTok's API needs your own (free) developer app first. "
+                                    "Set it up now in Settings → TikTok API?") == QMessageBox.Yes:
+                self.open_settings("TikTok API")
+            return
+        if st.account_busy(a.id, ("login", "post", "account", "check", "profile")):
+            QMessageBox.information(self, "Connect API", f"Wait for {a.label}'s current TikTok job to finish, "
+                                    "then press Connect API again.")
+            return
+        result: dict = {}
+
+        def work(j: Job) -> str:
+            from .. import tiktok
+
+            name = tiktok.connect_api(s, a, j.log, j.cancelled)
+            if name and a.username and name.lstrip("@").lower() != a.username.lstrip("@").lower():
+                result["other"] = name  # the wrong TikTok account: don't keep its tokens
+                try:
+                    tiktok.disconnect_api(s, a, j.log)
+                except Exception as e:  # noqa: BLE001 - the tokens file goes either way
+                    j.log(f"Couldn't sign the other account out of the API: {e}")
+                    a.tokens_path().unlink(missing_ok=True)
+            return name
+
+        def done(name: str) -> None:
+            if result.get("other"):
+                a.api_username, a.api_connected_at = "", 0.0
+                st.save_accounts()
+                st.accounts_edited()
+                self._log(f"✗ TikTok approved @{name}, not {a.handle}: the connection wasn't kept.")
+                QMessageBox.warning(self, "Connect API", f"TikTok approved @{name}, but {a.label} is "
+                                    f"{a.handle}, so the connection wasn't kept (its stats and posts would have "
+                                    f"gone to the wrong account).\n\nPress Log in on the Account page, log in as "
+                                    f"{a.handle} in the browser window, then press Connect API again.")
+                return
+            a.api_username, a.api_connected_at = name, time.time()
+            a.api_check, a.api_check_detail, a.api_check_at = "", "", 0.0
+            if name and not a.username:
+                a.username = name
+            st.save_accounts()
+            self._log(f"✓ {a.label} is connected to the TikTok API" + (f" as @{name}." if name else "."))
+            self.live_monitor.resume(a.id)
+            st.accounts_edited()
+            self.show_page(self.live)
+
+        def failed(msg: str) -> None:
+            st.account_changed.emit()
+            if msg != "Cancelled":
+                QMessageBox.warning(self, "Connect API", f"{a.label} couldn't be connected to the TikTok API.\n\n{msg}")
+
+        job = Job(f"Connecting {a.label} to the TikTok API", work, kind="login")
+        job.account_id = a.id
+        self._log(f"Connecting {a.label} to the TikTok API: approve TikTok Manager on the TikTok page that opens.")
+        st.run(job, pool="tiktok", on_success=done, on_failure=failed)
+        st.account_changed.emit()
+
+    def disconnect_api(self) -> None:
+        st = self.state
+        a = st.active
+        how = (f"\n\n{a.label} posts with the TikTok API, so autopilot can't post for it until you connect again "
+               "or switch it to Browser in Manage accounts." if methods.uses_api(a) else "")
+        if QMessageBox.question(self, "Disconnect API", f"Disconnect {a.label} from the TikTok API? The live view "
+                                f"stops for it.{how}") != QMessageBox.Yes:
+            return
+
+        def work(j: Job) -> None:
+            from .. import tiktok
+
+            tiktok.disconnect_api(st.settings, a, j.log)
+
+        def done(_=None) -> None:
+            a.api_username, a.api_connected_at = "", 0.0
+            a.api_check, a.api_check_detail, a.api_check_at = "", "", 0.0
+            st.save_accounts()
+            self._log(f"{a.label} is disconnected from the TikTok API.")
+            st.accounts_edited()
+            self.live_monitor.updated.emit(a.id)
+
+        job = Job(f"Disconnecting {a.label} from the TikTok API", work, kind="login")
+        job.account_id = a.id
+        st.run(job, pool="tiktok", on_success=done, on_failure=lambda _m: st.account_changed.emit())
+
+    def check_api(self) -> None:
+        """Test the shown account's API connection for how it posts, without posting."""
+        st = self.state
+        a = st.active
+        if st.account_busy(a.id, ("check", "login")):
+            return
+
+        def work(j: Job):
+            from .. import tiktok
+
+            return tiktok.check_api(st.settings, a, j.log)
+
+        def done(result) -> None:
+            verdict, lines = result
+            a.api_check, a.api_check_detail, a.api_check_at = verdict, "\n".join(lines), time.time()
+            st.save_accounts()
+            st.account_changed.emit()
+            head = (f"{a.label}'s TikTok API connection works." if verdict == "ok" else
+                    f"{a.label}'s TikTok API connection works, with a warning.")
+            self._log(("✓ " if verdict == "ok" else "⚠ ") + head + " " + "; ".join(lines))
+            (QMessageBox.information if verdict == "ok" else QMessageBox.warning)(
+                self, "Test API", head + "\n\n" + "\n".join(f"• {line}" for line in lines) + "\n\nNothing was posted.")
+
+        def failed(msg: str) -> None:
+            if msg == "Cancelled":
+                return
+            a.api_check, a.api_check_detail, a.api_check_at = "fail", msg, time.time()
+            st.save_accounts()
+            st.account_changed.emit()
+            QMessageBox.warning(self, "Test API", f"{a.label}'s TikTok API connection doesn't work.\n\n{msg}")
+
+        job = Job(f"Testing {a.label}'s TikTok API connection", work, kind="check")
+        job.account_id = a.id
+        st.run(job, pool="live", on_success=done, on_failure=failed)
 
     def check_posting(self, account: Account, full: bool, auto: bool = False) -> None:
         """Test TikTok Studio's upload page for `account` without posting (full: with a test clip)."""
@@ -799,10 +928,8 @@ class MainWindow(QMainWindow):
         st = self.state
         a = st.add_account(name)
         st.switch_account(a.id)
-        self.nav_buttons[3].click()
-        how = ("Your browser opens TikTok's approval page: approve with the TikTok account you want to add."
-               if st.settings.upload_method == "api" else
-               "A new browser window opens with its own empty profile: log in there with the TikTok account "
+        self.show_page(self.account)
+        how = ("A new browser window opens with its own empty profile: log in there with the TikTok account "
                "you want to add. Your other accounts stay logged in.")
         if QMessageBox.question(self, "Add account", f"Log in to TikTok for {a.label} now?\n\n{how}") == QMessageBox.Yes:
             self.login()

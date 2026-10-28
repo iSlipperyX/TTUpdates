@@ -60,13 +60,24 @@ def report(log_lines: int = 60) -> str:
 
         accounts = list(Accounts.load(s))
         n_accounts = f"{len(accounts)} ({sum(a.autopilot for a in accounts)} on autopilot)"
+        from collections import Counter
+
+        from .tiktok import methods
+
+        ways = Counter(a.post_with for a in accounts)
+        posting = ", ".join(f"{n} {way}" for way, n in sorted(ways.items()))
+        api = f"app {'set up' if methods.app_ready(s) else 'not set up'}, " + \
+              f"{sum(methods.api_connected(a) for a in accounts)} connected, " + \
+              f"{sum(a.live for a in accounts if methods.api_connected(a))} watched live every {s.live_interval} s"
     except Exception as exc:  # the report must work even when the app's files are the problem
         n_accounts = f"unknown ({exc})"
+        posting = api = "unknown"
     frozen = "installed app" if getattr(sys, "frozen", False) else "running from source"
     lines = [
         f"TikTok Manager {VERSION} ({frozen})",
         f"Windows: {platform.platform()}  Python {platform.python_version()}",
-        f"Upload method: {s.upload_method}, browser: {s.browser_channel}, accounts: {n_accounts}",
+        f"Accounts: {n_accounts}, posting with: {posting}, browser: {s.browser_channel}",
+        f"TikTok API: {api}, audited: {'yes' if s.api_audited else 'no'}",
         f"AI key: {'yes' if ai.has_key(s) else 'no'}, watched folders: {len(s.watch_folders)}, "
         f"phone folder: {'on' if s.phone_folder else 'off'}, setup done: {'yes' if s.setup_done else 'no'}, "
         f"auto updates: {'install' if s.auto_install_updates else 'check' if s.auto_check_updates else 'off'}",

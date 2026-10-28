@@ -1,6 +1,7 @@
 """The main window: which page it opens on, first-run setup, and keeping the phone folder up to date."""
 
 import os
+import time
 
 import pytest
 
@@ -54,13 +55,15 @@ def window(app):
 
     yield make
     for w in made:
-        for timer in (w.autopilot_timer, w.watch_timer, w.update_timer, w.clock, w.phone_timer, w.phone_soon):
+        for timer in (w.autopilot_timer, w.watch_timer, w.update_timer, w.clock, w.phone_timer, w.phone_soon,
+                      w.live_monitor.timer, w.live.clock):
             timer.stop()
         if w._setup is not None:
             w._setup.close()
         w.hide()
         w.state.cancel_all()
         w.state.analysis_pool.waitForDone(5000)
+        w.state.live_pool.waitForDone(5000)
         w.deleteLater()
     QApplication.processEvents()
 
@@ -123,3 +126,58 @@ def test_closing_setup_while_logging_in_lets_the_login_finish(window, monkeypatc
     assert w._setup is None and login.isVisible()
     runs[0]["on_success"](None)  # then the login finishes
     assert not login.isVisible() and w.state.settings.setup_done
+
+
+def test_the_live_page_sits_between_queue_and_account(window):
+    w = window()
+    names = [b.text() for b in w.nav_buttons]
+    assert names == ["Library", "Ready", "Queue", "Live", "Account"]
+    w.show_page(w.account)
+    assert w.stack.currentWidget() is w.account
+    w.account.live_requested.emit()
+    assert w.stack.currentWidget() is w.live
+
+
+def test_connect_api_without_a_developer_app_offers_the_setup(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    w = window()
+    asked, opened = [], []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.Yes)
+    monkeypatch.setattr(w, "open_settings", lambda tab="": opened.append(tab))
+    w.connect_api()
+    assert "developer app" in asked[0] and opened == ["TikTok API"]
+
+
+def test_connecting_the_wrong_tiktok_account_doesnt_keep_the_connection(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from tokmanager import tiktok
+
+    w = window()
+    st = w.state
+    st.settings.api_client_key, st.settings.api_client_secret = "key", "secret"
+    st.active.username = "cats"
+    signed_out, warned, resumed = [], [], []
+    monkeypatch.setattr(tiktok, "connect_api", lambda s, a, log, cancelled: "dogs")
+    monkeypatch.setattr(tiktok, "disconnect_api", lambda s, a, log: signed_out.append(a.id))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    monkeypatch.setattr(w.live_monitor, "resume", lambda aid: resumed.append(aid))
+    w.connect_api()
+    assert wait_for(lambda: warned)
+    assert signed_out == [st.active.id] and not resumed and st.active.api_username == ""
+    assert "@dogs" in warned[0] and "wasn't kept" in warned[0]
+
+
+def test_the_account_page_compares_with_a_day_before(window):
+    w = window()
+    st = w.state
+    now = time.time()
+    p = st.store.profile(st.active.id)
+    p.history = [[now - 30 * 3600, 100, 1000, 3], [now - 3600, 140, 1100, 4], [now, 150, 1200, 4]]
+    p.followers, p.likes, p.fetched_at = 150, 1200, now
+    w.account.refresh()
+    assert w.account.c_followers.sub.text() == "+50 in 24 h"
+    p.history = p.history[1:]
+    w.account.refresh()
+    assert w.account.c_followers.sub.text() == "+10 since 1 h ago"

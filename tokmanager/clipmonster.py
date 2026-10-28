@@ -31,6 +31,7 @@ def read_folder_index(folder: Path) -> dict[str, dict]:
         qc = clip.get("qc") or {}
         score = clip.get("score")
         rating = clip.get("rating")
+        part, parts = clip.get("part"), clip.get("parts")
         out[Path(file).name] = {
             "title": clip.get("title") or "",
             "score": float(score) if isinstance(score, (int, float)) else None,
@@ -42,6 +43,14 @@ def read_folder_index(folder: Path) -> dict[str, dict]:
             "hook": clip.get("hook") or "",
             "rating": int(rating) if isinstance(rating, (int, float)) else None,
             "permission": auto.get("permission", ""),
+            # ClipMonster 2.3: the niche the clip was made for and the TikTok account that niche posts to
+            "niche": str(auto.get("niche") or ""),
+            "niche_id": str(auto.get("niche_id") or ""),
+            "account": str(auto.get("account") or "").strip().lstrip("@").strip(),
+            # ClipMonster 2.4: a part series ("series" is unique within this folder only)
+            "series": str(clip.get("series") or ""),
+            "part": int(part) if isinstance(part, (int, float)) and part >= 1 else None,
+            "parts": int(parts) if isinstance(parts, (int, float)) and parts >= 1 else None,
             "license": video.get("license") or "",
             "warnings": list(qc.get("warnings") or []),
             "rejected": qc.get("ok") is False or file.replace("\\", "/").startswith(f"{REJECTED_DIR}/"),

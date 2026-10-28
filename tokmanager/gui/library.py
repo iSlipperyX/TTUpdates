@@ -242,7 +242,9 @@ class LibraryPage(QWidget):
         if item.source_reason:
             facts.append(f"Clip finder: “{item.source_reason}”")
         if not item.exists():
-            facts.append("⚠ file missing")
+            # ClipMonster's Clean up deletes posted clips' files; the post and its stats stay here
+            facts.append("file deleted after posting (its stats are kept)" if item.status == "posted"
+                         else "⚠ file missing")
         self.d_facts.setText(" · ".join(facts[:3]) + ("<br>" + "<br>".join(facts[3:]) if facts[3:] else ""))
         self.d_ring.set_value(item.total)
         self.d_breakdown.set_score(item.score)

@@ -15,6 +15,7 @@ from .. import jobs, schedule
 from ..accounts import POSTING_MODES
 from ..scoring import grade
 from ..store import VideoItem
+from ..tiktok import methods
 from . import theme
 from .editor import PostEditor
 from .state import AppState
@@ -83,7 +84,7 @@ class QueueDelegate(QStyledItemDelegate):
         p.setPen(QColor(theme.MUTED))
         caption = " ".join(item.caption.split())
         extra = caption if caption and caption != item.headline else Path(item.path).name  # not the title twice
-        sub = f"{fmt_dur(item.duration)}  ·  {extra[:120]}"
+        sub = f"{fmt_dur(item.duration)}  ·  " + (f"{item.part_label}  ·  " if item.part_label else "") + extra[:120]
         p.drawText(QRectF(x, r.y() + 48, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(sub, Qt.ElideRight, text_w))
 
@@ -356,13 +357,15 @@ class QueuePage(QWidget):
             self.next_label.setText(f"You post these yourself from the <a href='ready' style='color:{theme.ACCENT_2}'>"
                                     f"Ready page</a>{', with a reminder at each time' if reminders else ''}.{nxt}")
         elif not jobs.can_autopost(a, s):
-            self.next_label.setText(f"<span style='color:{theme.WARN}'>● On, but {_esc(a.label)} isn't logged in.</span> "
-                                    "Log in on the Account page so autopilot can post.")
+            why = methods.can_post(s, a)[1]
+            self.next_label.setText(f"<span style='color:{theme.WARN}'>● On, but it can't post yet.</span> {_esc(why)}")
         elif not q:
             self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Nothing is queued.")
         else:
             nxt = q[0]
-            method = "your browser login" if s.upload_method == "browser" else "the TikTok API"
+            method = {methods.BROWSER: "your browser login", methods.API: "the TikTok API",
+                      methods.API_DRAFT: "the TikTok API, as a draft to your TikTok app"}.get(a.post_with,
+                                                                                         "your browser login")
             self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.headline)}</b> "
                                     f"at {schedule.fmt_when(nxt.planned_at)} via {method}.")
 

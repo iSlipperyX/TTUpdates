@@ -138,20 +138,60 @@ def unqueued_watched(store: Store) -> list[VideoItem]:
                 if i.imported_by == "watch" and i.status == "new" and not i.account and i.exists()]
 
 
+def series_order(items: list[VideoItem]) -> list[VideoItem]:
+    """`items` in the same order, except that the parts of a series come together, part 1 first
+    (where the first of them was), so they're queued to post one after another."""
+    out: list[VideoItem] = []
+    done: set[str] = set()
+    for it in items:
+        if it.id in done:
+            continue
+        group = sorted((i for i in items if i.series == it.series), key=lambda i: i.part or 0) if it.series else [it]
+        out += group
+        done.update(i.id for i in group)
+    return out
+
+
+def niche_account(accounts: Accounts | list[Account], item: VideoItem) -> Account | None:
+    """The account ClipMonster made the clip for: its niche names a TikTok @username (clips.json
+    "automation" → "account"), matched to an account's username without caring about case or "@"."""
+    want = item.for_account.strip().lstrip("@").strip().lower()
+    if not want:
+        return None
+    return next((a for a in accounts if a.username and a.username.strip().lstrip("@").lower() == want), None)
+
+
 def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoItem], target: str) -> dict[str, int]:
-    """Queue freshly imported videos as Settings.watch_target says: "library" leaves them unqueued,
-    "spread" gives each to the account with the fewest videos waiting, an account id queues them all
-    for that account. Returns how many each account got."""
+    """Queue freshly imported videos.
+
+    A clip ClipMonster made for a niche goes to the account that niche names, whatever
+    Settings.watch_target says. The rest go as watch_target says: "library" leaves them unqueued,
+    "spread" gives each to the account with the fewest videos waiting, an account id queues them
+    all for that account. Returns how many each account got."""
     accounts = list(accounts)
     got: dict[str, int] = {}
-    if target == "library" or not items or not accounts:
+    if not items or not accounts:
         return got
     fixed = next((a for a in accounts if a.id == target), None)
-    if target != "spread" and fixed is None:
-        return got
     waiting = {a.id: sum(1 for i in store.queue(a.id) if i.status == "queued") for a in accounts}
-    for it in items:
-        aid = fixed.id if fixed else min(accounts, key=lambda a: waiting[a.id]).id
+    # The parts of a series all go to the account part 1 went to, also when they come in later.
+    ids = {a.id for a in accounts}
+    new = {i.id for i in items}
+    with store.lock:
+        series_to: dict[str, str] = {i.series: i.account for i in store.items.values()
+                                     if i.series and i.account in ids and i.id not in new}
+    for it in series_order(items):
+        owner = niche_account(accounts, it)
+        if owner is not None:
+            aid = owner.id
+        elif fixed is not None:
+            aid = fixed.id
+        elif target == "spread":
+            aid = series_to.get(it.series) or min(accounts, key=lambda a: waiting[a.id]).id
+        else:  # "library", or an account that has since been removed
+            continue
+        if it.series:
+            series_to.setdefault(it.series, aid)
         store.enqueue([it.id], aid)
         waiting[aid] += 1
         got[aid] = got.get(aid, 0) + 1
@@ -172,15 +212,16 @@ def hashtags_text(item: VideoItem, account: Account) -> str:
     return normalize_hashtags(f"{item.hashtags} {account.default_hashtags}")
 
 
-def mark_posted(store: Store, item_id: str, now: float | None = None) -> VideoItem | None:
+def mark_posted(store: Store, item_id: str, now: float | None = None, via: str = "hand") -> VideoItem | None:
     """You posted it yourself: it leaves the queue and joins the account's post history, where the
-    next stats refresh links it to the TikTok video (by caption and time)."""
+    next stats refresh links it to the TikTok video (by caption and time). The live view calls this
+    with via="seen" when it finds the video on TikTok."""
     now = time.time() if now is None else now
     with store.lock:
         it = store.get(item_id)
         if it is None or it.status in ("posted", "uploading") or not it.account:
             return None
-        it.status, it.posted_at, it.last_error = "posted", now, ""
+        it.status, it.posted_at, it.last_error, it.posted_via = "posted", now, "", via
         it.queue_pos = it.pinned_at = it.planned_at = None
         store._renumber()
     return it
@@ -192,7 +233,7 @@ def unmark_posted(store: Store, item_id: str, account_id: str) -> bool:
         it = store.get(item_id)
         if it is None or it.status != "posted" or it.tiktok_id:
             return False
-        it.status, it.posted_at, it.account, it.queue_pos = "queued", None, account_id, -1
+        it.status, it.posted_at, it.account, it.queue_pos, it.posted_via = "queued", None, account_id, -1, ""
         store._renumber()
     return True
 

@@ -3,10 +3,11 @@
 import datetime as dt
 import json
 import os
+from pathlib import Path
 
 import pytest
 
-from tokmanager import clipmonster, ready
+from tokmanager import clipmonster, ready, schedule
 from tokmanager.accounts import Accounts
 from tokmanager.config import Settings
 from tokmanager.store import Store
@@ -285,3 +286,138 @@ def test_a_single_watch_folder_saved_as_text_still_works(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"watch_folders": str(tmp_path / "TTVIDEOS")}), encoding="utf-8")
     assert Settings.load().watch_folders == [str(tmp_path / "TTVIDEOS")]
+
+
+# --- ClipMonster 2.3 niches and 2.4 part series ------------------------------------------
+
+
+def niche_folder(tmp_path, name, account, niche="Gaming", series=False):
+    folder = tmp_path / "Automation" / niche / "Chan" / name
+    folder.mkdir(parents=True)
+    clips = []
+    for n in (1, 2, 3):
+        f = f"0{n} - clip{n}.mp4"
+        (folder / f).write_bytes(b"x")
+        rec = {"file": f, "title": f"{name} {n}", "score": 90 - n * 10, "qc": {"ok": True}}
+        if series:
+            rec.update({"series": "series-1", "part": 4 - n, "parts": 3})  # files not in part order
+        clips.append(rec)
+    (folder / "clips.json").write_text(json.dumps({
+        "video": {"id": name, "title": name, "channel": "Chan"},
+        "automation": {"permission": "allowed", "niche": niche, "niche_id": f"id-{niche.lower()}",
+                       "account": account},
+        "clips": clips}), encoding="utf-8")
+    return folder
+
+
+@pytest.mark.parametrize("named", ["dogs", "@Dogs", " DOGS "])
+def test_niche_clips_go_to_the_account_their_niche_names(tmp_path, named):
+    accs, a, b = two_accounts()
+    niche_folder(tmp_path, "vid1", named)
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    assert {i.niche for i in items} == {"Gaming"} and {i.niche_id for i in items} == {"id-gaming"}
+    got = ready.assign(store, accs, items, "library")  # the niche wins over "leave them in the Library"
+    assert got == {b.id: 3}
+
+
+def test_niche_clips_without_a_matching_account_follow_the_new_clips_setting(tmp_path):
+    accs, a, b = two_accounts()
+    niche_folder(tmp_path, "vid1", "", niche="Blank")
+    niche_folder(tmp_path, "vid2", "@nobody", niche="Other")
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    assert ready.assign(store, accs, items, "library") == {}
+    assert ready.assign(store, accs, items, a.id) == {a.id: 6}
+
+
+def test_series_parts_are_queued_in_order_one_after_another(tmp_path):
+    accs, a, b = two_accounts()
+    niche_folder(tmp_path, "vid1", "", series=True)
+    niche_folder(tmp_path, "vid2", "", niche="Other")
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    parts = [i for i in items if i.series]
+    assert len(parts) == 3 and len({i.series for i in parts}) == 1 and parts[0].part_label.endswith("of 3")
+    ready.assign(store, accs, items, "spread")
+    q = store.queue(a.id) + store.queue(b.id)
+    in_series = [i for i in q if i.series]
+    assert len({i.account for i in in_series}) == 1  # all parts on one account
+    order = [i.part for i in store.queue(in_series[0].account) if i.series]
+    assert order == [1, 2, 3]
+    pos = [i.queue_pos for i in store.queue(in_series[0].account) if i.series]
+    assert pos == list(range(pos[0], pos[0] + 3))  # back to back
+
+
+def test_smart_order_keeps_a_series_together(tmp_path):
+    from tokmanager.store import VideoItem
+
+    def item(score, group, series="", part=None):
+        return VideoItem(path=f"C:/{score}.mp4", score={"total": score}, source_group=group, series=series, part=part)
+
+    p1, p2, p3 = item(60, "S", "S#1", 1), item(95, "S", "S#1", 2), item(50, "S", "S#1", 3)
+    x, y = item(80, "X"), item(70, "Y")
+    out = schedule.spread([x, p3, y, p1, p2])
+    assert out == [p1, p2, p3, x, y]  # placed by its best part (95), in part order
+
+
+def test_series_ids_from_two_videos_dont_mix(tmp_path):
+    niche_folder(tmp_path, "vid1", "", series=True)
+    niche_folder(tmp_path, "vid2", "", series=True)
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    assert len({i.series for i in items}) == 2  # both say "series-1"
+
+
+def test_clips_cleaned_up_after_posting_cause_no_errors_or_reimport(tmp_path):
+    import shutil
+
+    accs, a, b = two_accounts()
+    folder = niche_folder(tmp_path, "vid1", "cats")
+    root = str(tmp_path / "Automation")
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [root])
+    ready.assign(store, accs, items, "library")
+    first, second, third = sorted(store.queue(a.id), key=lambda i: i.queue_pos)
+    ready.mark_posted(store, first.id)
+    store.remove([third.id])  # removed in TikTok Manager: ClipMonster's Clean up deletes it too
+    # Clean up deletes the posted and removed clips' files, then the whole folder once it's empty
+    (folder / Path(first.path).name).unlink()
+    (folder / Path(third.path).name).unlink()
+    assert ready.import_watched(store, [root]) == []
+    ready.mark_posted(store, second.id)
+    shutil.rmtree(folder)
+    assert ready.import_watched(store, [root]) == []
+    reports = ready.watch_report(store, [root])
+    assert reports[0].exists and reports[0].clips == 0
+    assert store.get(first.id).status == "posted" and len(store.posted(a.id)) == 2
+    store.save()
+    again = Store(tmp_path / "lib.json")
+    assert {i.id for i in again.posted(a.id)} == {first.id, second.id}
+    assert ready.import_watched(again, [root]) == []
+
+
+def test_the_same_video_clipped_for_two_niches_makes_two_series(tmp_path):
+    for niche in ("Gaming", "Funny"):
+        niche_folder(tmp_path, "samevid", "", niche=niche, series=True)
+    store = Store(tmp_path / "lib.json")
+    items = ready.import_watched(store, [str(tmp_path / "Automation")])
+    assert len({i.series for i in items}) == 2
+    order = [(i.niche, i.part) for i in schedule.spread(items)]
+    first = order[0][0]
+    assert order[:3] == [(first, 1), (first, 2), (first, 3)]  # not 1, 1, 2, 2, 3, 3
+
+
+def test_later_parts_of_a_series_follow_part_1_to_its_account(tmp_path):
+    accs, a, b = two_accounts()
+    folder = niche_folder(tmp_path, "vid1", "", series=True)
+    data = json.loads((folder / "clips.json").read_text(encoding="utf-8"))
+    later = [c for c in data["clips"] if c["part"] != 1]
+    data["clips"] = [c for c in data["clips"] if c["part"] == 1]  # ClipMonster lists part 1 first
+    (folder / "clips.json").write_text(json.dumps(data), encoding="utf-8")
+    store = Store(tmp_path / "lib.json")
+    ready.assign(store, accs, ready.import_watched(store, [str(tmp_path / "Automation")]), "spread")
+    data["clips"] += later
+    (folder / "clips.json").write_text(json.dumps(data), encoding="utf-8")
+    ready.assign(store, accs, ready.import_watched(store, [str(tmp_path / "Automation")]), "spread")
+    assert len({i.account for i in store.items.values()}) == 1

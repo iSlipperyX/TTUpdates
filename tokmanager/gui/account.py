@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLab
 
 from .. import results
 from ..store import VideoItem
+from ..tiktok import methods
 from . import theme
 from .library import SortItem
 from .state import AppState
@@ -32,6 +33,10 @@ class AccountPage(QWidget):
     requeue_requested = Signal(str)
     manage_requested = Signal(str)  # account id
     profile_requested = Signal(str)  # account id
+    connect_api_requested = Signal()  # the official TikTok API, for the shown account
+    disconnect_api_requested = Signal()
+    api_check_requested = Signal()
+    live_requested = Signal()  # show the Live page
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -87,6 +92,33 @@ class AccountPage(QWidget):
             cl.addWidget(b)
         root.addWidget(conn)
 
+        # The official API connection: the live view, and posting for accounts set to post with it
+        api = panel()
+        al = QHBoxLayout(api)
+        al.setContentsMargins(14, 8, 14, 8)
+        acol = QVBoxLayout()
+        acol.setSpacing(0)
+        self.api_title = label("", "h2")
+        self.api_status = label("", "muted", wrap=True)
+        self.api_status.setTextFormat(Qt.RichText)
+        self.api_status.linkActivated.connect(lambda _l: self.live_requested.emit())
+        acol.addWidget(self.api_title)
+        acol.addWidget(self.api_status)
+        al.addLayout(acol, 1)
+        self.api_connect_btn = QPushButton("Connect API")
+        self.api_connect_btn.setToolTip("TikTok asks you to approve TikTok Manager in this account's own browser "
+                                        "window, once. Needed for the live view and for posting with the API.")
+        self.api_connect_btn.clicked.connect(self.connect_api_requested.emit)
+        self.api_test_btn = QPushButton("Test API")
+        self.api_test_btn.setToolTip("Checks the connection and what it's allowed to do. Nothing is posted.")
+        self.api_test_btn.clicked.connect(self.api_check_requested.emit)
+        self.api_disconnect_btn = QPushButton("Disconnect API")
+        self.api_disconnect_btn.clicked.connect(self.disconnect_api_requested.emit)
+        for b in (self.api_connect_btn, self.api_test_btn, self.api_disconnect_btn):
+            al.addWidget(b)
+        self.api_panel = api
+        root.addWidget(api)
+
         # Stat cards
         cards = QHBoxLayout()
         self.c_followers = StatCard("Followers")
@@ -104,7 +136,9 @@ class AccountPage(QWidget):
         tabs = QTabWidget()
         root.addWidget(tabs, 1)
         self.videos = self._table(["Posted", "Caption", "Views", "Likes", "Comments", "Shares", "Engagement",
-                                   "Views since last refresh", "Score"])
+                                   "Views lately", "Score"])
+        self.videos.horizontalHeaderItem(7).setToolTip("Views gained since the reading before the last one (at least "
+                                                       "half an hour apart while the live view is on)")
         self.videos.doubleClicked.connect(lambda idx: self._open_url(self.videos, idx.row()))
         self.history = self._table(["Posted", "Video", "Score", "Status", "Views", "Likes", "Details"])
         self.history.doubleClicked.connect(lambda idx: self._open_url(self.history, idx.row()))
@@ -118,6 +152,7 @@ class AccountPage(QWidget):
         self.state.account_changed.connect(self.refresh)
         self.state.account_switched.connect(self.refresh)
         self.state.library_changed.connect(self.refresh)
+        self.state.stats_changed.connect(self._stats_changed)
         self.state.jobs_changed.connect(self._update_buttons)
         self.refresh()
 
@@ -144,20 +179,23 @@ class AccountPage(QWidget):
         if not self.username.hasFocus():
             self.username.setText(a.username)
         self.badge.setPixmap(badge_for(a, 34))
-        if s.upload_method == "api":
-            from ..tiktok.api import Tokens
-
-            connected = Tokens.load(a.tokens_path()).usable
-            self.how.setText("Connected with the official TikTok API" if connected else
-                             "Official TikTok API: not connected (set up in Settings → TikTok API)")
-            self.login_btn.setText("Connect")
+        api_on = methods.app_ready(s) and methods.api_connected(a)
+        browser = "Edge" if s.browser_channel == "msedge" else "Chrome"
+        if methods.uses_api(a):
+            connected = api_on
+            self.how.setText(methods.explain(a.post_with) + (f" Its {browser} login is used for profile changes."
+                                                              if a.logged_in else ""))
         else:
             connected = a.logged_in
-            self.how.setText("Posts through TikTok's website in " +
-                             ("Edge" if s.browser_channel == "msedge" else "Chrome") + " (this account's own profile)")
-            self.login_btn.setText("Log in")
-        self.check_btn.setVisible(s.upload_method != "api" and connected)
-        tested = s.upload_method != "api" and a.upload_check_at
+            self.how.setText(f"Posts through TikTok's website in {browser} (this account's own profile)")
+        self.login_btn.setText("Log in again" if a.logged_in else "Log in")
+        self.login_btn.setObjectName("" if a.logged_in else "primary")
+        self.login_btn.style().unpolish(self.login_btn)
+        self.login_btn.style().polish(self.login_btn)
+        self.logout_btn.setVisible(a.logged_in)
+        self._refresh_api(api_on)
+        self.check_btn.setVisible(not methods.uses_api(a) and a.logged_in)
+        tested = not methods.uses_api(a) and a.upload_check_at
         verdict = {"ok": "✓ Posting test passed", "warn": "⚠ Posting test passed with a warning",
                    "fail": "✖ Posting test failed"}.get(a.upload_check, "Posting test ran")
         self.check_status.setText(f"{verdict} {_ago(a.upload_check_at)}" if tested else "")
@@ -172,14 +210,18 @@ class AccountPage(QWidget):
         title, handle = a.name or p.nickname, f"@{a.username}" if a.username else ""
         name = f"{title} ({handle})" if title and handle else title or handle or "New account"
         if not connected:
-            name = f"Not logged in{' · ' + name if name else ''}"
+            missing = "Not connected to the API" if methods.uses_api(a) else "Not logged in"
+            name = f"{missing}{' · ' + name if name else ''}"
         when = f" · updated {_ago(p.fetched_at)}" if p.fetched_at else ""
         self.who.setText(f"{name}{when}")
 
-        prev = p.history[-2] if len(p.history) >= 2 else None
-        self.c_followers.set(fmt_num(p.followers) if p.fetched_at else "—", *self._delta(p.followers, prev[1] if prev else None))
-        self.c_likes.set(fmt_num(p.likes) if p.fetched_at else "—", *self._delta(p.likes, prev[2] if prev else None))
-        self.c_videos.set(fmt_num(p.video_count) if p.fetched_at else "—")
+        prev, since = _day_before(p.history)
+        known = bool(p.fetched_at) and p.has_stats  # an API login without user.info.stats has no numbers
+        self.c_followers.set(fmt_num(p.followers) if known else "—",
+                             *self._delta(p.followers, prev[1] if prev else None, since) if known else ("", ""))
+        self.c_likes.set(fmt_num(p.likes) if known else "—",
+                         *self._delta(p.likes, prev[2] if prev else None, since) if known else ("", ""))
+        self.c_videos.set(fmt_num(p.video_count) if known else "—")
         vids = sorted(st.videos(a.id).values(), key=lambda v: v.create_time, reverse=True)
         total_views = sum(v.views for v in vids)
         self.c_views.set(fmt_num(total_views) if vids else "—", f"across {len(vids)} videos" if vids else "")
@@ -240,13 +282,68 @@ class AccountPage(QWidget):
         self.insight.setText(self._insight())
         self._update_buttons()
 
-    def _delta(self, now: int, before: float | None) -> tuple[str, str]:
+    def _refresh_api(self, connected: bool) -> None:
+        a, s = self.state.active, self.state.settings
+        self.api_status.setToolTip("")
+        self.api_connect_btn.setToolTip("")
+        self.api_connect_btn.setVisible(not connected)
+        self.api_test_btn.setVisible(connected)
+        self.api_disconnect_btn.setVisible(connected)
+        if not methods.app_ready(s):
+            self.api_title.setText("Official TikTok API: not set up")
+            self.api_status.setText("Optional. Needed to watch this account live and to post with TikTok's API. "
+                                    "Set up your developer app in Settings → TikTok API, then connect here.")
+            self.api_connect_btn.setText("Set up API…")
+            return
+        if not connected:
+            self.api_title.setText("Official TikTok API: not connected")
+            self.api_status.setText("Connect to watch this account live (Live page)" +
+                                    (" and to post, since it's set to post with the API." if methods.uses_api(a)
+                                     else "."))
+            self.api_connect_btn.setText("Connect API")
+            self.api_connect_btn.setObjectName("primary" if methods.uses_api(a) else "")
+            self.api_connect_btn.style().unpolish(self.api_connect_btn)
+            self.api_connect_btn.style().polish(self.api_connect_btn)
+            return
+        need = "video.upload" if a.post_with == methods.API_DRAFT else "video.publish"
+        other = a.api_username.lstrip("@") if a.api_username and a.username and \
+            a.api_username.lstrip("@").lower() != a.username.lstrip("@").lower() else ""
+        if other:
+            # Connected to a different TikTok account than the one logged in: connecting again replaces it
+            self.api_connect_btn.setVisible(True)
+            self.api_connect_btn.setText("Connect again…")
+            self.api_connect_btn.setToolTip(f"The API connection is for @{other}. Log in as @{a.username} in the "
+                                            "browser, then connect again.")
+        elif methods.uses_api(a) and need not in methods.granted_scopes(a):
+            # Connected for watching only: connecting again asks TikTok for posting too
+            self.api_connect_btn.setVisible(True)
+            self.api_connect_btn.setText("Allow posting…")
+            self.api_connect_btn.setToolTip("This account posts with the API, but was connected only for watching. "
+                                            "Connect again to allow posting.")
+        days = methods.api_days_left(a)
+        who = f" as @{a.api_username}" if a.api_username else ""
+        self.api_title.setText(f"Official TikTok API: connected{who}")
+        bits = [f"<a href='live' style='color:{theme.ACCENT_2}'>"
+                + ("● Watching live" if a.live else "Live view off") + "</a>"]
+        if days is not None:
+            colour = theme.WARN if days < methods.EXPIRY_WARN_DAYS else theme.MUTED
+            bits.append(f"<span style='color:{colour}'>login lasts {max(0, int(days))} more days</span>")
+        if a.api_check_at:
+            verdict = {"ok": "✓ test passed", "warn": "⚠ test passed with a warning",
+                       "fail": f"<span style='color:{theme.BAD}'>✖ test failed</span>"}.get(a.api_check, "tested")
+            bits.append(f"{verdict} {_ago(a.api_check_at)}")
+        if other:
+            bits.insert(0, f"<span style='color:{theme.BAD}'>⚠ not @{html.escape(a.username)}: connect again</span>")
+        self.api_status.setText(" · ".join(bits))
+        self.api_status.setToolTip(html.escape(a.api_check_detail).replace("\n", "<br>"))
+
+    def _delta(self, now: int, before: float | None, since: str = "") -> tuple[str, str]:
         if before is None:
             return "", ""
         d = int(now - before)
         if d == 0:
-            return "no change since last refresh", ""
-        return (f"{'+' if d > 0 else ''}{fmt_num(d)} since last refresh", theme.GOOD if d > 0 else theme.BAD)
+            return f"no change {since}", ""
+        return (f"{'+' if d > 0 else ''}{fmt_num(d)} {since}", theme.GOOD if d > 0 else theme.BAD)
 
     def _insight(self) -> str:
         """Does a higher score actually mean more views on this account? Compare halves once there's data."""
@@ -271,11 +368,27 @@ class AccountPage(QWidget):
             msg = f"Score and views aren't strongly linked yet ({len(pairs)} posts). Keep posting to build more data."
         return f"📈 {msg}{learned}"
 
+    def _stats_changed(self, account_id: str) -> None:
+        """New numbers (the live view reads every minute): only redraw when they're on screen."""
+        if account_id == self.state.active.id and self.isVisible():
+            self.refresh()
+        elif account_id == self.state.active.id:
+            self._stale = True
+
+    def showEvent(self, e) -> None:  # noqa: N802
+        super().showEvent(e)
+        if getattr(self, "_stale", False):
+            self._stale = False
+            self.refresh()
+
     def _update_buttons(self) -> None:
         busy = self.state.account_busy(self.state.active.id, ("account", "login"))
         self.refresh_btn.setEnabled(not busy)
         self.login_btn.setEnabled(not busy)
         self.logout_btn.setEnabled(not busy)
+        api_busy = busy or self.state.account_busy(self.state.active.id, ("check",))
+        for b in (self.api_connect_btn, self.api_test_btn, self.api_disconnect_btn):
+            b.setEnabled(not api_busy)
         checking = self.state.account_busy(self.state.active.id, ("check",))
         self.check_btn.setEnabled(not busy and not checking and not self.state.busy("post"))
         self.check_btn.setText("Testing…" if checking else "Test posting")
@@ -341,6 +454,19 @@ class AccountPage(QWidget):
         self.state.save_soon()
         self.state.log(f"Queued it for {self.state.accounts.label_for(account_id)} too.")
         self.state.library_changed.emit()
+
+
+def _day_before(history: list[list[float]]) -> tuple[list[float] | None, str]:
+    """The point to compare the newest one with: the last from a day before it ("in 24 h"), else the
+    oldest there is ("since 3 h ago"). The live view adds points every half hour, so the one just
+    before would only be a few minutes of change."""
+    if len(history) < 2:
+        return None, ""
+    newest = history[-1][0]
+    day = [h for h in history[:-1] if newest - h[0] >= 86400]
+    if day:
+        return day[-1], "in 24 h" if newest - day[-1][0] < 1.5 * 86400 else f"since {_ago(day[-1][0])}"
+    return history[0], f"since {_ago(history[0][0])}"
 
 
 def _ago(ts: float) -> str:
