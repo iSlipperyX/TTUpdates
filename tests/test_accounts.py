@@ -301,7 +301,14 @@ def test_autopilot_picks_the_most_overdue_video_among_accounts_with_autopilot(tm
     assert (acc.id, item.id) == ("B", b1.id)
     b.logged_in = False  # can't post in the browser without a login
     assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None
-    assert jobs.autopilot_pick(st, [a, b], Settings(upload_method="api"), now=noon)[0].id == "B"
+    # An account that posts with the official API needs its API connection instead
+    b.post_with = "api"
+    api = Settings(api_client_key="k", api_client_secret="s")
+    assert jobs.autopilot_pick(st, [a, b], api, now=noon) is None  # not connected yet
+    Tokens(access_token="A", refresh_token="R", refresh_expires_at=9e9).save(b.tokens_path())
+    assert jobs.autopilot_pick(st, [a, b], api, now=noon)[0].id == "B"
+    assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None  # no developer app set up
+    b.post_with = "browser"
     b.autopilot = False
     assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None
 

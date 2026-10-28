@@ -34,5 +34,6 @@ def test_report_has_the_essentials_and_no_secrets():
     s.save()
     crash("latest problem")
     text = diagnostics.report()
-    assert "TikTok Manager" in text and "accounts: 1" in text and "latest problem" in text
+    assert "TikTok Manager" in text and "Accounts: 1" in text and "latest problem" in text
+    assert "posting with: 1 browser" in text and "TikTok API: app not set up" in text
     assert "sk-ant-secret-123" not in text and "shh-456" not in text

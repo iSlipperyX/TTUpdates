@@ -45,6 +45,7 @@ class Outcome:
     comments: int
     shares: int
     lift: float  # views / the account's usual views
+    niche: str = ""  # ClipMonster's niche id for the clip (clips.json "automation" → "niche_id"), "" if none
 
 
 def from_clipmonster(item: VideoItem) -> bool:
@@ -82,7 +83,8 @@ def outcomes(store: Store, now: float | None = None, min_age_hours: float = MIN_
                     item_id=it.id, account=account, channel=it.source_channel, video_id=group, clip=it.name,
                     hook=it.hook, caption=it.caption, length=round(it.duration or v.duration, 1),
                     rating=it.source_rating, score=it.source_score, posted_at=posted, views=v.views,
-                    likes=v.likes, comments=v.comments, shares=v.shares, lift=round(v.views / usual, 3)))
+                    likes=v.likes, comments=v.comments, shares=v.shares, lift=round(v.views / usual, 3),
+                    niche=it.niche_id))
     out.sort(key=lambda o: o.posted_at, reverse=True)
     return out
 

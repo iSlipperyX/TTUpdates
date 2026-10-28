@@ -19,6 +19,33 @@ from . import theme
 from .widgets import label
 
 
+DEVELOPERS_URL = "https://developers.tiktok.com/"
+
+
+def api_steps_html(redirect_uri: str) -> str:
+    """Setting up a TikTok developer app for TikTok Manager, step by step (Settings → TikTok API)."""
+    steps = [
+        f"Log in at <a href='{DEVELOPERS_URL}'>developers.tiktok.com</a> (sign up as a developer with your email "
+        "if it asks). Click your profile icon → <b>Manage apps</b> → <b>Connect an app</b>, pick your own "
+        "account as the owner, press <b>Confirm</b> and name the app, e.g. “TikTok Manager”.",
+        "Switch the toggle next to the app's name to <b>Sandbox</b> and press <b>Create Sandbox</b> (any name, "
+        "then <b>Confirm</b>). A sandbox works for your own accounts without TikTok's app review.",
+        "In the sandbox's <b>App details</b>, add an icon, category and description, and tick <b>Desktop</b> "
+        "under Platforms (if it asks for a website, your TikTok profile link will do).",
+        "Press <b>Add products</b> and add <b>Login Kit</b> and <b>Display API</b>, plus <b>Content Posting "
+        f"API</b> if you want to post with the API. In Login Kit, add the Desktop <b>Redirect URI</b> "
+        f"<code>{redirect_uri}</code> (Copy button below).",
+        "Under <b>Scopes</b> (left side), add the permissions listed below, then press <b>Apply changes</b>.",
+        "In <b>Sandbox settings</b> → <b>Target users</b>, press <b>Add account</b> and log in with each TikTok "
+        "account you want to watch. TikTok can take up to an hour to let it in.",
+        "Copy the <b>Client key</b> and <b>Client secret</b> from the sandbox's App details into the boxes below "
+        "and press Save. Then press <b>Connect API</b> on the Account page and approve TikTok Manager. The Live "
+        "page starts by itself.",
+    ]
+    return "<ol style='margin-left:-20px'>" + "".join(f"<li style='margin-bottom:4px'>{t}</li>" for t in steps) + \
+        "</ol>"
+
+
 def _combo(options: list[tuple[str, str]], current: str) -> QComboBox:
     c = QComboBox()
     for value, text in options:
@@ -90,9 +117,8 @@ class SettingsDialog(QDialog):
 
         # Posting
         f = _form(tabs, "Posting")
-        self.method = _combo([("browser", "Browser: my TikTok login in Edge/Chrome (recommended)"),
-                              ("api", "Official TikTok API (needs a developer app)")], settings.upload_method)
-        f.addRow("Upload with", self.method)
+        f.addRow("Post with", label("Set for each account in Manage accounts: its browser login (recommended) or "
+                                    "TikTok's official API (TikTok API tab).", "muted", wrap=True))
         self.channel = _combo([("msedge", "Microsoft Edge"), ("chrome", "Google Chrome")], settings.browser_channel)
         f.addRow("Browser", self.channel)
         self.show_browser = QCheckBox("Show the browser window while posting")
@@ -152,26 +178,7 @@ class SettingsDialog(QDialog):
         f.addRow("Hashtags per video", self.tag_count)
 
         # API
-        f = _form(tabs, "TikTok API", "Only needed if you choose 'Official TikTok API' above. Create an app at "
-                                      "developers.tiktok.com with Login Kit (Desktop) and Content Posting API, "
-                                      "add the redirect URI below, and paste its keys here. Until TikTok audits "
-                                      "your app it can only post 'Only me' videos to a private account.")
-        self.client_key = QLineEdit(settings.api_client_key)
-        f.addRow("Client key", self.client_key)
-        self.client_secret = QLineEdit(settings.api_client_secret)
-        self.client_secret.setEchoMode(QLineEdit.Password)
-        f.addRow("Client secret", self.client_secret)
-        self.port = QSpinBox(minimum=1024, maximum=65535, value=settings.api_redirect_port)
-        self.redirect = QLineEdit()
-        self.redirect.setReadOnly(True)
-        self.port.valueChanged.connect(lambda p: self.redirect.setText(f"http://localhost:{p}/callback/"))
-        self.redirect.setText(f"http://localhost:{settings.api_redirect_port}/callback/")
-        f.addRow("Local port", self.port)
-        f.addRow("Redirect URI", self.redirect)
-        self.post_mode = _combo([("direct", "Publish directly"),
-                                 ("inbox", "Send as a draft to my TikTok app (I finish posting on my phone)")],
-                                settings.api_post_mode)
-        f.addRow("Posting", self.post_mode)
+        self._build_api_tab(tabs, settings)
 
         # Updates
         f = _form(tabs, "Updates", "New versions are published as releases on GitHub. Installing one replaces only "
@@ -321,6 +328,71 @@ class SettingsDialog(QDialog):
         again.clicked.connect(self._run_setup)
         f.addRow("", again)
 
+    def _build_api_tab(self, tabs: QTabWidget, settings: Settings) -> None:
+        from .. import live
+        from ..tiktok.api import SCOPES
+
+        f = _form(tabs, "TikTok API", "Optional and free. TikTok's official API lets the Live page watch your "
+                                      "accounts (views, likes, followers as they come in, no browser window) and "
+                                      "can post for accounts set to post with it. It needs your own developer app "
+                                      "on developers.tiktok.com; this takes about 10 minutes, once.")
+        port = settings.api_redirect_port
+        self.api_steps = label("", wrap=True)
+        self.api_steps.setTextFormat(Qt.RichText)
+        self.api_steps.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.api_steps.setOpenExternalLinks(True)
+        f.addRow("", self.api_steps)
+        links = QHBoxLayout()
+        portal = QPushButton("Open developers.tiktok.com")
+        portal.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(DEVELOPERS_URL)))
+        links.addWidget(portal)
+        links.addStretch(1)
+        f.addRow("", links)
+        self.redirect = QLineEdit()
+        self.redirect.setReadOnly(True)
+        copy = QPushButton("Copy")
+        copied = label("", "muted")
+        copy.clicked.connect(lambda: (QApplication.clipboard().setText(self.redirect.text()),
+                                      copied.setText("Copied")))
+        row = QHBoxLayout()
+        row.addWidget(self.redirect, 1)
+        row.addWidget(copy)
+        row.addWidget(copied)
+        f.addRow("Redirect URI", row)
+        self.client_key = QLineEdit(settings.api_client_key)
+        self.client_key.setPlaceholderText("from your app's page on developers.tiktok.com")
+        f.addRow("Client key", self.client_key)
+        self.client_secret = QLineEdit(settings.api_client_secret)
+        self.client_secret.setEchoMode(QLineEdit.Password)
+        f.addRow("Client secret", self.client_secret)
+        self.port = QSpinBox(minimum=1024, maximum=65535, value=port)
+        self.port.setToolTip("Only change this if another program uses the port; then change the redirect URI "
+                             "in your TikTok app to match")
+        self.port.valueChanged.connect(self._port_changed)
+        f.addRow("Local port", self.port)
+        self.audited = QCheckBox("TikTok has audited my app (posts through the API can be public)")
+        self.audited.setToolTip("Until TikTok's audit, posts the API publishes are 'Only me'. Sending drafts to the "
+                                "TikTok app works before the audit.")
+        self.audited.setChecked(settings.api_audited)
+        f.addRow("", self.audited)
+        f.addRow("Permissions", label("Tick these on your app's Scopes list: " + ", ".join(SCOPES) +
+                                      ". The two video.* posting ones are only needed to post with the API.",
+                                      "muted", wrap=True))
+        self.live_interval = _combo([(str(secs), text.capitalize()) for secs, text in live.INTERVALS],
+                                    str(settings.live_interval))
+        self.live_interval.setToolTip("How often the Live page reads each account you watch")
+        f.addRow("Live view reads", self.live_interval)
+        self.live_alerts = QCheckBox("Notify me when a video takes off, hits a milestone, or a queued clip shows "
+                                     "up on TikTok")
+        self.live_alerts.setChecked(settings.live_alerts)
+        f.addRow("", self.live_alerts)
+        self._port_changed(port)
+
+    def _port_changed(self, port: int) -> None:
+        uri = f"http://localhost:{port}/callback/"
+        self.redirect.setText(uri)
+        self.api_steps.setText(api_steps_html(uri))
+
     def _add_watch(self, path: str) -> None:
         existing = {self.watch_list.item(i).text() for i in range(self.watch_list.count())}
         if path and path not in existing:
@@ -353,7 +425,6 @@ class SettingsDialog(QDialog):
         s.ideal_min_len = min(self.min_len.value(), self.max_len.value())
         s.ideal_max_len = max(self.min_len.value(), self.max_len.value())
         s.target_lufs = self.lufs.value()
-        s.upload_method = self.method.currentData()
         s.browser_channel = self.channel.currentData()
         s.show_browser = self.show_browser.isChecked()
         s.allow_comments, s.allow_duet, s.allow_stitch = (self.comments.isChecked(), self.duet.isChecked(),
@@ -368,7 +439,9 @@ class SettingsDialog(QDialog):
         s.api_client_key = self.client_key.text().strip()
         s.api_client_secret = self.client_secret.text().strip()
         s.api_redirect_port = self.port.value()
-        s.api_post_mode = self.post_mode.currentData()
+        s.api_audited = self.audited.isChecked()
+        s.live_interval = int(self.live_interval.currentData())
+        s.live_alerts = self.live_alerts.isChecked()
         s.watch_folders = [self.watch_list.item(i).text() for i in range(self.watch_list.count())]
         s.watch_target = self.watch_target.currentData()
         s.watch_ai = self.watch_ai.isChecked()
