@@ -1,19 +1,17 @@
-"""The live view: reading an account through the official API and turning the changes into a feed."""
+"""The live view: reading an account's TikTok profile in its browser and turning the changes into a feed."""
 
 import json
-import threading
 import time
 
 import pytest
 
-from fake_tiktok_api import FakeTikTokAPI
+from fake_tiktok_browser import FakeTikTok
 from tokmanager import live, ready, results
 from tokmanager.accounts import Accounts
 from tokmanager.config import Settings
 from tokmanager.store import Profile, Store, TikTokVideo, VideoItem, _add_point
-from tokmanager.tiktok import api as api_mod
-from tokmanager.tiktok import compose_caption, methods
-from tokmanager.tiktok.api import ApiError, TikTokAPI, Tokens
+from tokmanager.tiktok import compose_caption
+from tokmanager.tiktok.browser import BrowserError
 
 HOUR = 3600
 
@@ -26,25 +24,20 @@ def isolated_dirs(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake(monkeypatch):
-    f = FakeTikTokAPI("cats")
-    monkeypatch.setattr(api_mod, "API", f.base)
-    yield f
-    f.close()
+    return FakeTikTok("cats").install(monkeypatch)
 
 
 def settings(**kw) -> Settings:
-    return Settings(api_client_key="key", api_client_secret="secret", **kw)
+    return Settings(**kw)
 
 
 def connected_account(username="cats", **kw):
+    """The first account, logged in to TikTok (in its browser profile) as @username."""
     accs = Accounts.load(Settings())
     a = accs.items[0]
-    a.username = username
+    a.username, a.logged_in = username, True
     for k, v in kw.items():
         setattr(a, k, v)
-    Tokens(access_token="act-0", refresh_token="rft-0", scope=FakeTikTokAPI().scope if False else
-           "user.info.basic,user.info.profile,user.info.stats,video.list,video.publish,video.upload",
-           expires_at=time.time() + HOUR, refresh_expires_at=time.time() + 300 * 86400).save(a.tokens_path())
     return a
 
 
@@ -55,10 +48,10 @@ def reading(at, followers=10, videos=(), full=False):
                         full=full)
 
 
-# --- reading through the API ------------------------------------------------------------
+# --- reading the profile page ---------------------------------------------------------------
 
 
-def test_read_gets_the_profile_and_newest_videos_then_all_of_them(fake):
+def test_read_gets_the_profile_and_newest_videos_hidden_then_all_of_them(fake):
     a = connected_account()
     now = time.time()
     for n in range(45):
@@ -66,51 +59,59 @@ def test_read_gets_the_profile_and_newest_videos_then_all_of_them(fake):
     r = live.read(settings(), a)
     assert r.profile.username == "cats" and r.profile.followers == 10
     assert len(r.videos) == live.RECENT_VIDEOS and r.videos[0].id == "v0" and not r.full
-    assert fake.video_calls() == 2  # two pages of 20
+    assert fake.opened[0]["headless"] and fake.opened[0]["profile_dir"] == a.browser_dir()  # its own login, hidden
     full = live.read(settings(), a, full=True)
-    assert len(full.videos) == 45 and full.full
-    assert full.videos[-1].views == 440
+    assert len(full.videos) == 45 and full.full and full.videos[-1].views == 440
 
 
-def test_read_doesnt_wait_out_a_rate_limit_and_says_why(fake):
+def test_the_window_shows_while_reading_only_when_asked(fake):
     a = connected_account()
-    fake.fail_with, fake.status = "rate_limit_exceeded", 429
-    t0 = time.time()
-    with pytest.raises(ApiError) as e:
+    fake.add_video("v1", "a cat")
+    live.read(settings(live_show_browser=True), a)
+    assert not fake.opened[0]["headless"]
+
+
+@pytest.mark.parametrize("error,code", [
+    (BrowserError("This account's TikTok browser window is already open. Close it and try again."), "busy"),
+    (BrowserError("Couldn't find msedge. Pick another browser in Settings."), "no_browser"),
+    (BrowserError("TikTok didn't return a profile for @cats."), "no_profile"),
+    (BrowserError("TikTok is asking for a captcha. Turn on 'Show the browser' and try again."), "captcha"),
+    (type("TimeoutError", (Exception,), {})("Timeout 20000ms exceeded"), "page"),
+])
+def test_what_went_wrong_in_the_browser_is_said_plainly(fake, error, code):
+    a = connected_account()
+    fake.fail_with = error
+    with pytest.raises(live.LiveError) as e:
         live.read(settings(), a)
-    assert e.value.code == "rate_limit_exceeded" and "Too many requests" in str(e.value)
-    assert time.time() - t0 < 5  # the poster's 15 s wait is for posting only
+    assert e.value.code == code and str(e.value)
+    if code == "page":
+        assert "didn't load in time" in str(e.value)
+    if code == "captcha":
+        assert "Settings → Live" in str(e.value)
 
 
-def test_an_expired_access_token_is_refreshed_once_even_from_two_threads(fake):
+def test_a_profile_without_its_videos_is_a_failed_reading(fake):
     a = connected_account()
-    t = Tokens.load(a.tokens_path())
-    t.expires_at = time.time() - 10
-    t.save(a.tokens_path())
-    errors = []
-
-    def go():
-        try:
-            TikTokAPI(settings(), a.tokens_path()).profile()
-        except Exception as exc:  # pragma: no cover - shown by the assert
-            errors.append(exc)
-
-    threads = [threading.Thread(target=go) for _ in range(4)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
-    assert not errors
-    assert len([c for c in fake.token_calls if c["grant_type"] == "refresh_token"]) == 1
-    assert Tokens.load(a.tokens_path()).access_token == "act-1"
-
-
-def test_a_dead_refresh_token_disconnects_the_account(fake):
-    a = connected_account()
-    Tokens(access_token="x", refresh_token="dead", expires_at=0, refresh_expires_at=time.time() + 99).save(a.tokens_path())
-    with pytest.raises(ApiError) as e:
+    fake.add_video("v1", "a cat")
+    fake.withhold_videos = True
+    with pytest.raises(live.LiveError) as e:
         live.read(settings(), a)
-    assert e.value.code == "invalid_grant" and not methods.api_connected(a)
+    assert e.value.code == "no_videos" and "captcha" in str(e.value)
+
+
+def test_an_account_with_no_login_and_no_username_isnt_read(fake):
+    a = connected_account(username="", logged_in=False)
+    with pytest.raises(live.LiveError) as e:
+        live.read(settings(), a)
+    assert e.value.code == "no_user" and e.value.code in live.STOP_CODES and not fake.opened
+
+
+def test_a_busy_browser_is_tried_again_soon_not_backed_off(tmp_path):
+    w = live.Watcher("a", tmp_path)
+    s = settings(live_interval=600)
+    for _ in range(3):
+        w.failed(s, "The account's browser window is open…", "busy", 1000.0)
+    assert w.next_at == 1000.0 + live.MIN_INTERVAL and not w.stopped
 
 
 # --- turning readings into events -------------------------------------------------------
@@ -296,19 +297,19 @@ def test_the_first_reading_catches_clips_posted_earlier_today(tmp_path):
 # --- errors, backoff and the feed on disk -----------------------------------------------
 
 
-def test_errors_back_off_and_a_lost_connection_stops_until_resumed(tmp_path):
+def test_errors_back_off_and_a_lost_login_stops_until_resumed(tmp_path):
     a = connected_account()
     w = live.Watcher(a.id)
-    s = settings(live_interval=60)
+    s = settings(live_interval=120)
     now = 1_000_000.0
-    ev = w.failed(s, "TikTok returned HTTP 503", "", now)
-    assert w.next_at == now + 120 and len(ev) == 1 and "Trying again in 2 min" in ev[0].text
+    ev = w.failed(s, "TikTok's page didn't load in time.", "page", now)
+    assert w.next_at == now + 240 and len(ev) == 1 and "Trying again in 4 min" in ev[0].text
     assert w.failed(s, "again", "", now) == []  # not every failure fills the feed
-    assert w.next_at == now + 240
+    assert w.next_at == now + 480
     for _ in range(10):
         w.failed(s, "again", "", now)
     assert w.next_at == now + live.MAX_BACKOFF
-    ev = w.failed(s, "The TikTok API login has run out", "invalid_grant", now)
+    ev = w.failed(s, "Cats isn't logged in.", "no_user", now)
     assert w.stopped and ev[0].alert and ev[0].text.startswith("Stopped watching")
     w.resume()
     assert not w.stopped and w.failures == 0 and w.next_at == 0
@@ -345,98 +346,42 @@ def test_live_readings_keep_history_points_half_an_hour_apart():
     assert _add_point([[0, 1]], [5, 2], 0) == [[0, 1], [5, 2]]  # a manual refresh always adds one
 
 
-def test_api_stats_keep_what_only_the_browser_reads(tmp_path):
+def test_a_reading_without_saves_or_bio_keeps_the_ones_known(tmp_path):
     st = Store(tmp_path / "lib.json")
     st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=10, saves=7)])
     st.update_profile("A", Profile(username="cats", bio="my bio", followers=1))
-    st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=20)])  # the API has no saves
-    st.update_profile("A", Profile(username="cats", followers=2))  # nor the bio, without its scope
+    st.update_tiktok_videos("A", [TikTokVideo(id="v1", views=20)])  # a grid-only reading has no saves
+    st.update_profile("A", Profile(username="cats", followers=2))  # nor the bio
     assert st.videos("A")["v1"].saves == 7 and st.profile("A").bio == "my bio"
 
 
-# --- the front door: stats and posting go each account's own way ------------------------
+# --- the front door: stats come from the account's own browser ---------------------------
 
 
-def test_stats_come_from_the_api_when_connected(fake):
+def test_stats_come_from_the_accounts_own_browser(fake):
     from tokmanager import tiktok
 
     a = connected_account()
     fake.add_video("v1", "hello", views=42)
     profile, vids = tiktok.refresh_account(settings(), a, print, lambda: False)
     assert profile.username == "cats" and [v.views for v in vids] == [42]
+    assert fake.opened[0]["profile_dir"] == a.browser_dir()
 
 
-def test_when_the_api_fails_stats_fall_back_to_the_browser_login(fake, monkeypatch):
-    from tokmanager import tiktok
-    from tokmanager.tiktok import browser
-
-    a = connected_account(logged_in=True)
-    fake.fail_with = "internal_error"
-    used = []
-
-    class FakeBrowser:
-        def __init__(self, *args, **kw):
-            used.append(True)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def fetch_account(self, username):
-            return Profile(username=username, followers=5), []
-
-    monkeypatch.setattr(browser, "TikTokBrowser", FakeBrowser)
-    lines = []
-    profile, _ = tiktok.refresh_account(settings(), a, lines.append, lambda: False)
-    assert used and profile.followers == 5 and "reading them through the browser" in lines[0]
-    a.logged_in = False
-    with pytest.raises(ApiError):
-        tiktok.refresh_account(settings(), a, lines.append, lambda: False)
-
-
-def test_an_api_draft_account_posts_to_the_tiktok_app_inbox(fake, tmp_path, monkeypatch):
-    from tokmanager import tiktok
-
-    monkeypatch.setattr(api_mod, "POLL_SECONDS", 0)
-    a = connected_account(post_with="api_draft")
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"x" * 1000)
-    item = VideoItem(path=str(clip), caption="hi", account=a.id)
-    out = tiktok.post(item, a.apply(settings()), a, print, lambda: False)
-    assert out["via"] == "api_draft" and out["publish_id"] == "pub-1"
-    assert fake.inits[0]["path"] == "/post/publish/inbox/video/init/" and fake.uploads == [1000]
-
-
-def test_unaudited_direct_posts_go_up_as_only_me(fake, tmp_path, monkeypatch):
-    from tokmanager import tiktok
-
-    monkeypatch.setattr(api_mod, "POLL_SECONDS", 0)
-    a = connected_account(post_with="api")
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"x" * 10)
-    item = VideoItem(path=str(clip), caption="hi", account=a.id)
-    out = tiktok.post(item, a.apply(settings()), a, print, lambda: False)
-    assert fake.inits[0]["post_info"]["privacy_level"] == "SELF_ONLY" and out["tiktok_id"] == "7001"
-    fake.inits.clear()
-    tiktok.post(item, a.apply(settings(api_audited=True)), a, print, lambda: False)
-    assert fake.inits[0]["post_info"]["privacy_level"] == "PUBLIC_TO_EVERYONE"
-
-
-def test_an_api_account_without_a_connection_says_what_to_do(tmp_path):
-    from tokmanager import tiktok
-
-    accs = Accounts.load(Settings())
-    a = accs.items[0]
-    a.post_with = "api"
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"x")
-    item = VideoItem(path=str(clip), account=a.id)
-    with pytest.raises(RuntimeError, match="no developer app is set up"):
-        tiktok.post(item, a.apply(Settings()), a, print, lambda: False)
-    with pytest.raises(RuntimeError, match="Connect API"):
-        tiktok.post(item, a.apply(settings()), a, print, lambda: False)
+def test_settings_and_accounts_saved_by_1_5_0_still_load(tmp_path):
+    Settings().save()
+    path = Settings.path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(api_client_key="k", api_client_secret="s", api_audited=True, upload_method="api", live_interval=60)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    s = Settings.load()
+    assert s.live_interval == 300 and not hasattr(s, "api_client_key")  # a minute is too often for a browser
+    accs = Accounts.load(s)
+    raw = json.loads(accs.path.read_text(encoding="utf-8"))
+    raw["accounts"][0].update(post_with="api_draft", api_username="cats", api_check="ok")
+    accs.path.write_text(json.dumps(raw), encoding="utf-8")
+    a = Accounts.load(s).items[0]
+    assert not hasattr(a, "post_with") and a.live
 
 
 def test_results_for_clipmonster_carry_the_niche(tmp_path):
@@ -493,7 +438,7 @@ def test_a_torn_last_line_doesnt_swallow_the_next_event(tmp_path):
     assert [e.text for e in live.EventLog("x", tmp_path).events] == ["ok", "marked as posted"]
 
 
-@pytest.mark.parametrize("interval", [60, 300, 600])
+@pytest.mark.parametrize("interval", [120, 300, 600, 1800])
 def test_a_reading_on_time_is_never_summed_up_as_while_you_were_away(tmp_path, interval):
     a, st, w = _watch(tmp_path)
     s = settings(live_interval=interval)
@@ -515,7 +460,7 @@ def test_a_milestone_is_announced_once_even_when_the_count_wobbles(tmp_path):
     assert sorted(said) == ["🏆 @cats reached 1K followers.", "🏆 “a cat” passed 10K views."]
 
 
-def test_without_the_stats_permission_the_numbers_already_known_are_kept(tmp_path):
+def test_a_reading_without_numbers_keeps_the_ones_known(tmp_path):
     a, st, w = _watch(tmp_path)
     s = settings()
     t = 1_800_000_000.0
@@ -528,14 +473,6 @@ def test_without_the_stats_permission_the_numbers_already_known_are_kept(tmp_pat
     assert len(p.history) == 1  # no made-up point at 0
 
 
-def test_api_profile_says_when_it_couldnt_read_the_numbers(fake):
-    a = connected_account()
-    Tokens(access_token="act-0", refresh_token="rft-0", scope="user.info.basic,user.info.profile,video.list",
-           expires_at=time.time() + HOUR, refresh_expires_at=time.time() + 300 * 86400).save(a.tokens_path())
-    p = TikTokAPI(settings(), a.tokens_path()).profile()
-    assert p.username == "cats" and not p.has_stats
-
-
 def test_readings_of_a_different_tiktok_account_are_refused(tmp_path):
     a, st, w = _watch(tmp_path)
     t = 1_800_000_000.0
@@ -543,92 +480,6 @@ def test_readings_of_a_different_tiktok_account_are_refused(tmp_path):
     events = w.apply(st, a, settings(), r)
     assert w.stopped and "@dogs" in w.stopped and events[0].kind == "error"
     assert st.profile(a.id).followers == 0 and a.username == "cats"
-
-
-def test_posting_with_tokens_for_another_account_is_refused():
-    a = connected_account(post_with="api_draft", api_username="dogs")
-    ok, why = methods.can_post(settings(), a)
-    assert not ok and "@dogs" in why
-
-
-def test_running_out_of_time_on_the_approval_page_says_so(fake):
-    class Window:
-        closed = False
-
-        def wait_closed(self):
-            self.closed = True
-
-    a = connected_account()
-    with pytest.raises(ApiError, match="Timed out"):
-        TikTokAPI(settings(api_redirect_port=0), a.tokens_path()).connect(timeout=0.5, open_page=lambda u: Window())
-
-
-def test_an_api_poster_from_before_1_5_keeps_posting_publicly(tmp_path):
-    Settings().save()
-    path = Settings.path()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data.pop("api_audited")
-    data.update(upload_method="api", api_post_mode="direct")
-    path.write_text(json.dumps(data), encoding="utf-8")
-    assert Settings.load().api_audited
-    data["api_post_mode"] = "inbox"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    assert not Settings.load().api_audited
-
-
-def _approve(urls):
-    """A stand-in for TikTok's approval page: it redirects back with a code, like approving does."""
-    import urllib.parse
-    import urllib.request
-
-    class Window:
-        closed = False
-
-        def wait_closed(self):
-            self.closed = True
-
-    def open_page(url):
-        urls.append(url)
-        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
-        back = f"{q['redirect_uri']}?code=c1&state={q['state']}"
-        threading.Timer(0.2, lambda: urllib.request.urlopen(back, timeout=5).read()).start()
-        return Window()
-
-    return open_page
-
-
-@pytest.mark.parametrize("post_with,asked", [("browser", "video.list"), ("api", "video.list,video.publish,video.upload")])
-def test_connect_asks_tiktok_only_for_what_the_account_needs(fake, monkeypatch, post_with, asked):
-    import socket
-    import urllib.parse
-
-    from tokmanager import tiktok
-    from tokmanager.tiktok import login
-
-    a = connected_account(post_with=post_with)
-    a.tokens_path().unlink()
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    urls = []
-    monkeypatch.setattr(login.BrowserWindow, "open", staticmethod(lambda s, folder, url: _approve(urls)(url)))
-    assert tiktok.connect_api(settings(api_redirect_port=port), a, lambda m: None, lambda: False) == "cats"
-    scope = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(urls[0]).query))["scope"]
-    assert scope.endswith(asked) and ("video.publish" in scope) == (post_with == "api")
-    assert methods.api_connected(a)
-
-
-def test_a_watch_only_connection_tests_fine_but_cant_post(fake):
-    from tokmanager import tiktok
-
-    a = connected_account()
-    Tokens(access_token="act-0", refresh_token="rft-0", scope="user.info.basic,user.info.profile,user.info.stats,video.list",
-           expires_at=time.time() + HOUR, refresh_expires_at=time.time() + 300 * 86400).save(a.tokens_path())
-    verdict, lines = tiktok.check_api(settings(), a, lambda m: None)
-    assert verdict == "ok" and any("only used to read" in line for line in lines)
-    a.post_with = "api_draft"
-    ok, why = methods.can_post(settings(), a)
-    assert not ok and "Connect API" in why
 
 
 def test_without_stats_or_videos_the_start_line_comes_once(tmp_path):

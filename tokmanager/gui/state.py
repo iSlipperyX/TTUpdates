@@ -97,9 +97,6 @@ class AppState(QObject):
         # One browser/TikTok action at a time: they share a browser profile and a login.
         self.tiktok_pool = QThreadPool(self)
         self.tiktok_pool.setMaxThreadCount(1)
-        # The live view's readings: plain HTTPS to TikTok's API, so they don't wait for the browser.
-        self.live_pool = QThreadPool(self)
-        self.live_pool.setMaxThreadCount(2)
         self.jobs: list[Job] = []
         self._save_timer = QTimer(self, singleShot=True, interval=800, timeout=self.store.save)
 
@@ -206,7 +203,7 @@ class AppState(QObject):
         job.signals.done.connect(lambda: self._finished(job))
         self.jobs.append(job)
         self.jobs_changed.emit()
-        {"tiktok": self.tiktok_pool, "live": self.live_pool}.get(pool, self.analysis_pool).start(job)
+        (self.tiktok_pool if pool == "tiktok" else self.analysis_pool).start(job)
         return job
 
     def _finished(self, job: Job) -> None:
@@ -224,6 +221,6 @@ class AppState(QObject):
                 continue
             j.cancel()
             # Jobs still waiting for a thread never run, so drop them here.
-            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j) or self.live_pool.tryTake(j):
+            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j):
                 self.jobs.remove(j)
         self.jobs_changed.emit()

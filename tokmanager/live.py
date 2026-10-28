@@ -1,8 +1,9 @@
-"""Live activity: each account connected to TikTok's official API is read every minute or so.
+"""Live activity: each logged-in account's TikTok profile page is read every few minutes.
 
 A reading (`read`, on a worker thread) is the account's profile numbers and its newest videos,
-from the Display API: plain HTTPS, no browser window. `Watcher.apply` (on the GUI thread) compares
-it with the reading before and turns the difference into events for the Live page:
+taken from its profile page in its own browser profile (the same Edge login it posts with), with
+the window hidden. `Watcher.apply` (on the GUI thread) compares it with the reading before and
+turns the difference into events for the Live page:
 
 - a video's views, likes, comments and shares moving ("+120 views, +8 likes on …"),
 - followers coming and going,
@@ -15,8 +16,9 @@ The numbers also go into the library's stats, so the Account page and ClipMonste
 at most every half hour) stay current. Events are kept in live/<account id>.jsonl in the app's data
 folder: the last 2,000, and all of today's for its totals.
 
-Limits that come from TikTok: the API only lists *public* videos ("Only me" posts don't show),
-its numbers can trail the TikTok app by a few minutes, and it has no comment text, only counts.
+Each reading opens the browser for a few seconds, so it waits its turn behind posting and other
+browser work for the account, and isn't done more often than every 2 minutes. The profile page
+shows public videos only, so "Only me" posts don't show.
 Nothing here needs GUI code, so it can be tested and run on worker threads.
 """
 
@@ -36,18 +38,18 @@ from .config import Settings, app_dir
 from .store import INTERRUPTED, Profile, Store, TikTokVideo, VideoItem, _norm
 
 # How often to read, as Settings.live_interval offers it: (seconds, words)
-INTERVALS = [(30, "every 30 s"), (60, "every minute"), (120, "every 2 min"), (300, "every 5 min"),
-             (600, "every 10 min")]
-MIN_INTERVAL = 30
-RECENT_VIDEOS = 40  # newest videos read every time (two pages of TikTok's video list)
-FULL_EVERY = 30 * 60  # all of them (up to ALL_VIDEOS) this often, so older videos stay current too
-ALL_VIDEOS = 200
+INTERVALS = [(120, "every 2 min"), (300, "every 5 min"), (600, "every 10 min"), (900, "every 15 min"),
+             (1800, "every 30 min")]
+MIN_INTERVAL = 120
+RECENT_VIDEOS = 30  # newest videos read every time (the first screen of the profile's video grid)
+FULL_EVERY = 2 * 3600  # all of them (up to ALL_VIDEOS, scrolling the grid) this often, so older ones stay current
+ALL_VIDEOS = 120
 HISTORY_SPACING = 30 * 60  # the library keeps one point per half hour of live readings (store._add_point)
 MAX_BACKOFF = 15 * 60  # after errors, wait at most this long before trying again
 AWAY_AFTER = 10 * 60  # a gap longer than this (or 3 readings' worth) is summed up as "while you were away"
 FEED_VIDEOS = 6  # videos named in the feed per reading; the rest are summed up in one line
 MAX_EVENTS = 2000
-MAX_TODAY_EVENTS = 60_000  # today's are all kept beyond MAX_EVENTS, up to this (a day at 30 s is ~25,000)
+MAX_TODAY_EVENTS = 60_000  # today's are all kept beyond MAX_EVENTS, up to this (a day at 2 min is ~6,000)
 VIEW_MILESTONES = (1_000, 10_000, 100_000, 1_000_000, 10_000_000)
 FOLLOWER_MILESTONES = (100, 1_000, 10_000, 100_000, 1_000_000)
 HOT_WINDOW = 10 * 60  # "taking off": views gained in the last 10 minutes…
@@ -57,8 +59,16 @@ HOT_QUIET = 3600  # said at most once an hour per video
 SERIES_SECONDS = 3 * 3600  # per-video readings kept in memory (for "taking off" and the trend lines)
 SEEN_WITHIN = 2 * 86400  # a queued clip is only matched to videos posted in the last two days
 
-# Error codes after which reading stops until the account is connected again
-STOP_CODES = ("not_connected", "invalid_grant", "access_token_invalid", "scope_not_authorized")
+# Error codes after which reading stops until the account is logged in (or set up) again
+STOP_CODES = ("no_user", "no_browser")
+
+
+class LiveError(Exception):
+    """A reading that didn't work, with a code for Watcher.failed (STOP_CODES stop reading)."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -97,14 +107,39 @@ class Reading:
 
 
 def read(s: Settings, account: Account, full: bool = False, log: Callable[[str], None] = lambda _m: None,
-         now: Callable[[], float] = time.time) -> Reading:
-    """Read the account's profile and videos from the official API (worker thread)."""
-    from .tiktok.api import TikTokAPI
+         cancelled: Callable[[], bool] = lambda: False, now: Callable[[], float] = time.time) -> Reading:
+    """Read the account's profile page in its browser profile, out of sight (worker thread)."""
+    from .tiktok import refresh_account
+    from .tiktok.browser import BrowserError, Cancelled
 
-    api = TikTokAPI(s, account.tokens_path(), log)
-    api.wait_on_rate_limit = False  # Watcher.failed backs off instead of holding this thread
-    profile = api.profile()
-    videos = api.videos(max_videos=ALL_VIDEOS if full else RECENT_VIDEOS, username=profile.username)
+    if not account.username and not account.logged_in:
+        raise LiveError(f"{account.label} isn't logged in, so there's no profile to read. Log in on the "
+                        "Account page.", "no_user")
+    try:
+        profile, videos = refresh_account(s, account, log, cancelled, max_videos=ALL_VIDEOS if full else RECENT_VIDEOS,
+                                          headless=not s.live_show_browser)
+    except Cancelled:
+        raise LiveError("Cancelled.", "cancelled") from None
+    except BrowserError as exc:
+        text = str(exc)
+        if "already open" in text:
+            raise LiveError("The account's browser window is open, so it can't be read until it's closed.",
+                            "busy") from None
+        if "Couldn't find" in text:
+            raise LiveError(text, "no_browser") from None
+        if "captcha" in text.lower():
+            raise LiveError("TikTok is asking for a captcha. Turn on 'Show the browser while reading' in Settings → "
+                            "Live and solve it in the window that opens at the next reading.", "captcha") from None
+        if "Couldn't tell which account" in text:
+            raise LiveError(text, "no_user") from None
+        raise LiveError(text, "no_profile") from None
+    except Exception as exc:  # noqa: BLE001 - Playwright's timeouts and page errors
+        name = type(exc).__name__
+        raise LiveError("TikTok's page didn't load in time." if "Timeout" in name else
+                        f"The browser couldn't read TikTok ({name}).", "page") from None
+    if not videos and profile.video_count:
+        raise LiveError("TikTok sent the profile but not its videos (it may want a captcha). Turn on "
+                        "'Show the browser while reading' in Settings → Live if this keeps happening.", "no_videos")
     return Reading(at=now(), profile=profile, videos=videos, full=full)
 
 
@@ -297,7 +332,7 @@ class Watcher:
         self.last_full = 0.0
         self.last_ok = 0.0
         self.failures = 0
-        self.stopped = ""  # why reading stopped until the account is connected again
+        self.stopped = ""  # why reading stopped until the account is logged in again (or watching turned back on)
         self.error = ""
         self.next_at = 0.0
 
@@ -307,10 +342,10 @@ class Watcher:
         return now - self.last_full >= FULL_EVERY
 
     def schedule(self, s: Settings, now: float) -> None:
-        self.next_at = now + max(MIN_INTERVAL, int(s.live_interval or 60))
+        self.next_at = now + max(MIN_INTERVAL, int(s.live_interval or 300))
 
     def failed(self, s: Settings, message: str, code: str, now: float) -> list[Event]:
-        """A reading didn't work: wait longer each time, or stop when the connection is gone."""
+        """A reading didn't work: wait longer each time, or stop when there's nothing it could read."""
         self.failures += 1
         self.error = message
         events = []
@@ -318,10 +353,10 @@ class Watcher:
             self.stopped = message
             events.append(Event(at=now, kind="error", text=f"Stopped watching: {message}", alert=True))
         else:
-            base = max(MIN_INTERVAL, int(s.live_interval or 60))
+            base = max(MIN_INTERVAL, int(s.live_interval or 300))
             wait = min(MAX_BACKOFF, base * 2 ** min(self.failures, 6))
-            if code == "rate_limit_exceeded":
-                wait = max(wait, 120)
+            if code == "busy":  # just waiting for a window to close: look again soon, it's not TikTok's fault
+                wait = MIN_INTERVAL
             self.next_at = now + wait
             if self.failures == 1 or self.failures % 10 == 0:  # don't fill the feed while TikTok is down
                 events.append(Event(at=now, kind="error",
@@ -330,7 +365,7 @@ class Watcher:
         return events
 
     def resume(self) -> None:
-        """The account was connected again (or watching was turned back on)."""
+        """The account was logged in again (or watching was turned back on)."""
         self.stopped = self.error = ""
         self.failures = 0
         self.next_at = 0.0
@@ -356,10 +391,10 @@ class Watcher:
 
         theirs = r.profile.username.lstrip("@").lower()
         if account.username and theirs and theirs != account.username.lstrip("@").lower():
-            # Connected to a different TikTok account: its numbers would land in this one's stats.
-            self.stopped = self.error = (f"the API connection is for @{r.profile.username}, not "
-                                         f"{account.handle}. Press Connect API on the Account page again, "
-                                         f"logged in as {account.handle}.")
+            # A different TikTok account's page: its numbers would land in this one's stats.
+            self.stopped = self.error = (f"TikTok showed @{r.profile.username}'s profile, not "
+                                         f"{account.handle}'s. Check the username on the Account page, then turn "
+                                         "Watch live back on.")
             events = [Event(at=r.at, kind="error", alert=True, text=f"Stopped watching: {self.stopped}")]
             self.log.add(events)
             return events
@@ -370,7 +405,7 @@ class Watcher:
         never_read = not self.prev_at  # nothing in the library or from an earlier reading to compare with
         since = self.prev_at
         gap = r.at - since if since else 0.0
-        away = bool(since) and gap > max(AWAY_AFTER, 3 * max(MIN_INTERVAL, int(s.live_interval or 60)))
+        away = bool(since) and gap > max(AWAY_AFTER, 3 * max(MIN_INTERVAL, int(s.live_interval or 300)))
         self.failures, self.error, self.stopped = 0, "", ""
         self.last_ok = r.at
         if r.full:
@@ -449,7 +484,7 @@ class Watcher:
                                     comments=total[2], shares=total[3],
                                     text=f"{changes(*total)} across {len(rest)} more videos"))
 
-        # Followers (not when the connection wasn't allowed to read them)
+        # Followers (not when the page didn't show them)
         f_now = r.profile.followers if r.profile.has_stats else self.prev_followers
         if f_now is not None and self.prev_followers is not None and f_now != self.prev_followers:
             d = f_now - self.prev_followers

@@ -9,7 +9,6 @@ from tokmanager import schedule
 from tokmanager.config import Settings
 from tokmanager.store import INTERRUPTED, Store, TikTokVideo, VideoItem
 from tokmanager.tiktok import compose_caption, normalize_hashtags
-from tokmanager.tiktok.api import MB, _chunking, _new_pkce
 from tokmanager.tiktok.browser import _short_number
 
 
@@ -87,23 +86,6 @@ def test_caption_composition():
 
 
 # --- TikTok helpers ------------------------------------------------------------------
-
-
-def test_chunking_follows_tiktok_rules():
-    assert _chunking(3 * MB) == (3 * MB, 1)
-    assert _chunking(64 * MB) == (64 * MB, 1)
-    chunk, count = _chunking(205 * MB)
-    assert chunk == 10 * MB and count == 20
-    last = 205 * MB - chunk * (count - 1)
-    assert 5 * MB <= last <= 128 * MB
-
-
-def test_pkce_is_hex_sha256():
-    import hashlib
-
-    verifier, challenge = _new_pkce()
-    assert 43 <= len(verifier) <= 128
-    assert challenge == hashlib.sha256(verifier.encode()).hexdigest()
 
 
 @pytest.mark.parametrize("text,value", [("845", 845), ("1.2K", 1200), ("3.4M", 3400000), ("", 0), ("1,234", 1234)])

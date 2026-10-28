@@ -99,7 +99,7 @@ def test_not_logged_in_fails_first(studio, tmp_path, monkeypatch):
 
 def test_daily_check_only_for_autopilot_accounts_and_not_just_before_a_post(tmp_path):
     now = time.time()
-    s = Settings(upload_method="browser")
+    s = Settings()
     on = Account(autopilot=True, logged_in=True)
     off = Account(autopilot=False, logged_in=True)
     store = Store(tmp_path / "lib.json")
@@ -110,5 +110,5 @@ def test_daily_check_only_for_autopilot_accounts_and_not_just_before_a_post(tmp_
     soon = VideoItem(path="C:/x/a.mp4", status="queued", account=on.id, queue_pos=0, planned_at=now + 600)
     store.items[soon.id] = soon
     assert jobs.upload_check_due(store, [on], s, now) is None  # a post is due in 10 minutes
-    api = Account(autopilot=True, logged_in=True, post_with="api")  # no TikTok upload page to check
-    assert jobs.upload_check_due(Store(tmp_path / "other.json"), [api], s, now) is None
+    logged_out = Account(autopilot=True, logged_in=False)  # nothing to check without a login
+    assert jobs.upload_check_due(Store(tmp_path / "other.json"), [logged_out], s, now) is None

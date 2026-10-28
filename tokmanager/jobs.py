@@ -230,10 +230,8 @@ def replan(store: Store, accounts: Accounts | list[Account], s: Settings, now: f
 
 
 def can_autopost(account: Account, s: Settings) -> bool:
-    """Autopilot is on for the account and it can post the way it's set to (methods.can_post)."""
-    from .tiktok.methods import can_post
-
-    return account.autopilot and can_post(s, account)[0]
+    """Autopilot is on for the account and it has a login to post with."""
+    return account.autopilot and account.logged_in
 
 
 def autopilot_pick(store: Store, accounts: Accounts | list[Account], s: Settings,
@@ -265,13 +263,10 @@ UPLOAD_CHECK_QUIET = 30 * 60  # and never this close before a post is due
 
 def upload_check_due(store: Store, accounts: Accounts | list[Account], s: Settings,
                      now: float | None = None) -> Account | None:
-    """An autopilot account whose TikTok upload page is due its daily check (accounts posting through
-    the browser only: the API has no upload page to break)."""
-    from .tiktok.methods import uses_api
-
+    """An autopilot account whose TikTok upload page is due its daily check."""
     now = time.time() if now is None else now
     for a in accounts:
-        if uses_api(a) or not can_autopost(a, s) or now - a.upload_check_at < UPLOAD_CHECK_EVERY:
+        if not can_autopost(a, s) or now - a.upload_check_at < UPLOAD_CHECK_EVERY:
             continue
         nxt = next_post(store, a.id)
         if nxt and nxt.planned_at and nxt.planned_at - now < UPLOAD_CHECK_QUIET:

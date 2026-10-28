@@ -76,7 +76,7 @@ class VideoItem:
     tiktok_id: str = ""
     tiktok_url: str = ""
     publish_id: str = ""
-    # How it went up: "browser" | "api" | "api_draft" (posted by the app), "hand" (marked posted on the
+    # How it went up: "browser" (posted by the app; "api"/"api_draft" from 1.5.0), "hand" (marked posted on the
     # Ready page) or "seen" (the live view found it on TikTok); "" for posts before 1.5
     posted_via: str = ""
 
@@ -155,7 +155,7 @@ class Profile:
     video_count: int = 0
     fetched_at: float = 0.0
     history: list[list[float]] = field(default_factory=list)  # [fetched_at, followers, likes, videos]
-    has_stats: bool = True  # False: the numbers weren't read (an API login without user.info.stats)
+    has_stats: bool = True  # False: the reading had no numbers (the old numbers are kept)
 
 
 @dataclass
@@ -474,7 +474,7 @@ class Store:
                 old = known.get(v.id)
                 if old:
                     v.history = old.history
-                    v.saves = v.saves or old.saves  # the API doesn't give saves; the browser does
+                    v.saves = v.saves or old.saves  # a reading without saves keeps the last ones
                 v.history = _add_point(v.history, [now, v.views, v.likes, v.comments, v.shares], spacing)[-60:]
                 known[v.id] = v
             self.link_posts(account)

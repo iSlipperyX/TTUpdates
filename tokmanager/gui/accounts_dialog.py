@@ -98,11 +98,6 @@ class AccountsDialog(QDialog):
         for value, text, tip in POSTING_MODES:
             self.mode.addItem(text, value)
             self.mode.setItemData(self.mode.count() - 1, tip, Qt.ToolTipRole)
-        self.post_with = QComboBox()
-        for value, text, tip in methods.METHODS:
-            self.post_with.addItem(text, value)
-            self.post_with.setItemData(self.post_with.count() - 1, tip, Qt.ToolTipRole)
-        self.post_with_note = label("", "muted", wrap=True)
         self.hashtags = QLineEdit()
         self.hashtags.setPlaceholderText("#fyp #yourniche")
         self.hashtags.setToolTip("Added to every post from this account (tags already in the caption aren't repeated)")
@@ -112,8 +107,6 @@ class AccountsDialog(QDialog):
         form.addRow("Name", self.name)
         form.addRow("TikTok @", self.username)
         form.addRow("Posting", self.mode)
-        form.addRow("Post with", self.post_with)
-        form.addRow("", self.post_with_note)
         form.addRow("Who can watch", self.privacy)
         form.addRow("Always add hashtags", self.hashtags)
         form.addRow("Niche / audience", self.niche)
@@ -142,7 +135,6 @@ class AccountsDialog(QDialog):
         self.username.editingFinished.connect(self._check_username)
         self.privacy.currentIndexChanged.connect(self._edited)
         self.mode.currentIndexChanged.connect(self._mode_picked)
-        self.post_with.currentIndexChanged.connect(self._method_picked)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
@@ -211,8 +203,6 @@ class AccountsDialog(QDialog):
         self.privacy.setCurrentIndex(max(0, self.privacy.findData(a.default_privacy)))
         self.mode.setCurrentIndex(max(0, self.mode.findData(a.mode)))
         self.mode.setToolTip(dict((v, t) for v, _, t in POSTING_MODES)[a.mode])
-        self.post_with.setCurrentIndex(max(0, self.post_with.findData(a.post_with)))
-        self._method_note(a)
         self.hashtags.setText(a.default_hashtags)
         self.niche.setText(a.niche)
         self.profile_note.setText(profile.status(a))
@@ -254,36 +244,6 @@ class AccountsDialog(QDialog):
             self._saving = False
         self._show_selected()
         self._refresh_rows()
-
-    def _method_note(self, a: Account) -> None:
-        s = self.state.settings
-        text = methods.explain(a.post_with)
-        if methods.uses_api(a):
-            ready, why = methods.can_post(s, a)
-            if not ready:
-                text += f" ⚠ {why}"
-            elif a.post_with == methods.API and not s.api_audited:
-                text += (" Until TikTok audits your developer app, these posts are 'Only me' (and stay private "
-                         "after the audit). Drafts to the TikTok app don't have that limit.")
-        self.post_with_note.setText(text)
-
-    def _method_picked(self) -> None:
-        a = self.selected_account()
-        if self._loading or not a:
-            return
-        value = self.post_with.currentData()
-        if value == a.post_with:
-            return
-        a.post_with = value
-        self.state.save_accounts()
-        self.state.log(f"{a.label} now posts with: {methods.name(value)}.")
-        self._method_note(a)
-        self._refresh_rows()
-        self._saving = True
-        try:
-            self.state.accounts_edited()
-        finally:
-            self._saving = False
 
     def _tidy_tags(self) -> None:
         tidy = normalize_hashtags(self.hashtags.text())

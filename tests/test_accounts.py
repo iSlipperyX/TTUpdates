@@ -10,7 +10,6 @@ from tokmanager.accounts import LEGACY_BROWSER_PROFILE, LEGACY_TOKENS, Account, 
 from tokmanager.config import Settings, app_dir, cache_dir
 from tokmanager.store import Profile, Store, TikTokVideo, VideoItem
 from tokmanager.tiktok import compose_caption
-from tokmanager.tiktok.api import Tokens
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +77,7 @@ def test_single_account_install_becomes_the_first_account(tmp_path):
     assert (a.default_privacy, a.default_hashtags, a.niche) == ("friends", "#cats", "cat videos")
     # The login files stay where 1.0 put them, so nobody has to log in again.
     assert a.browser_dir() == cache_dir() / LEGACY_BROWSER_PROFILE
-    assert a.tokens_path() == app_dir() / LEGACY_TOKENS
+    assert a.login_paths()[1] == app_dir() / LEGACY_TOKENS  # 1.5.0's API tokens, cleaned up with the account
 
     assert store.adopt(accs.ids(), a.id)
     store.save()
@@ -101,7 +100,6 @@ def test_fresh_install_gets_one_account_with_its_own_login_folder():
     a = accs.active
     assert len(accs) == 1 and not a.logged_in and not a.autopilot
     assert a.browser_dir() == cache_dir() / "browser-profiles" / a.id
-    assert a.tokens_path() == app_dir() / "tokens" / f"{a.id}.json"
 
 
 def test_accounts_round_trip_and_active_account():
@@ -129,12 +127,14 @@ def test_new_account_copies_schedule_but_starts_with_autopilot_off():
 def test_removing_an_account_keeps_at_least_one_and_deletes_its_login():
     accs, a, b = two_accounts()
     (b.browser_dir() / "Default").mkdir()
-    Tokens(refresh_token="r", refresh_expires_at=9e9).save(b.tokens_path())
+    tokens = b.login_paths()[1]  # API tokens left by 1.5.0
+    tokens.parent.mkdir(parents=True, exist_ok=True)
+    tokens.write_text("{}", encoding="utf-8")
     accs.active_id = b.id
     removed = accs.remove(b.id)
     assert removed is b and accs.ids() == [a.id] and accs.active.id == a.id
     Accounts.delete_login(removed)
-    assert not (cache_dir() / b.browser_profile).exists() and not b.tokens_path().exists()
+    assert not (cache_dir() / b.browser_profile).exists() and not tokens.exists()
     assert accs.remove(a.id) is None  # the last account stays
 
 
@@ -149,15 +149,6 @@ def test_apply_lays_account_values_over_app_settings():
     assert s.posts_per_day == 3  # the original isn't changed
     it = VideoItem(path="C:/x/a.mp4", title="a", caption="Watch this")
     assert compose_caption(it, t) == "Watch this | #gaming"
-
-
-def test_api_tokens_are_kept_per_account():
-    accs, a, b = two_accounts()
-    Tokens(access_token="A", refresh_token="ra", refresh_expires_at=9e9).save(a.tokens_path())
-    assert Tokens.load(a.tokens_path()).usable
-    assert not Tokens.load(b.tokens_path()).usable
-    Tokens.clear(a.tokens_path())
-    assert not Tokens.load(a.tokens_path()).usable
 
 
 # --- per-account queues ----------------------------------------------------------------------
@@ -288,7 +279,7 @@ def test_replan_uses_each_accounts_own_schedule_and_last_post(tmp_path):
 def test_autopilot_picks_the_most_overdue_video_among_accounts_with_autopilot(tmp_path):
     st, (a1, _), (b1, _) = queued_store(tmp_path)
     a, b = make_accounts()
-    s = Settings(upload_method="browser")
+    s = Settings()
     noon = ts(2026, 10, 20, 12, 5)
     jobs.replan(st, [a, b], s, now=ts(2026, 10, 20, 9))
     # Both are due at 12:05: A's 10:00 slot is older than B's 12:00.
@@ -301,15 +292,7 @@ def test_autopilot_picks_the_most_overdue_video_among_accounts_with_autopilot(tm
     assert (acc.id, item.id) == ("B", b1.id)
     b.logged_in = False  # can't post in the browser without a login
     assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None
-    # An account that posts with the official API needs its API connection instead
-    b.post_with = "api"
-    api = Settings(api_client_key="k", api_client_secret="s")
-    assert jobs.autopilot_pick(st, [a, b], api, now=noon) is None  # not connected yet
-    Tokens(access_token="A", refresh_token="R", refresh_expires_at=9e9,
-           scope="video.list,video.publish").save(b.tokens_path())
-    assert jobs.autopilot_pick(st, [a, b], api, now=noon)[0].id == "B"
-    assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None  # no developer app set up
-    b.post_with = "browser"
+    b.logged_in = True
     b.autopilot = False
     assert jobs.autopilot_pick(st, [a, b], s, now=noon) is None
 

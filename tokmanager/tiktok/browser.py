@@ -211,6 +211,7 @@ class TikTokBrowser:
                 video_count=_int(stats.get("videoCount")),
                 fetched_at=time.time(),
             )
+            self._wait_for_captcha()  # hidden: says so; shown: waits while you solve it
             # Scroll to make the page load more of the video grid.
             last, still = -1, 0
             for _ in range(40):

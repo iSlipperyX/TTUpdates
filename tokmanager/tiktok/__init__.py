@@ -1,9 +1,7 @@
-"""One front door for posting, account refreshes and the official API connection.
-
-Each account posts the way `Account.post_with` says (methods.py): through its own browser
-profile, or through TikTok's official API. `s` is the account's own settings (Account.apply), so
+"""One front door for posting, account refreshes and profile changes, all through the account's
+own browser profile (its TikTok login). `s` is the account's own settings (Account.apply), so
 captions use that account's default hashtags and privacy; `account` says whose browser profile
-or API tokens to use."""
+to use."""
 
 from __future__ import annotations
 
@@ -48,95 +46,29 @@ def compose_caption(item: VideoItem, s: Settings) -> str:
 
 def post(item: VideoItem, s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
          progress: Callable[[str], None] | None = None) -> dict:
-    """Post one queued item the account's way. Returns {'publish_id', 'tiktok_id', 'via'} where known."""
-    from . import methods
+    """Post one queued item through TikTok Studio in the account's own browser profile."""
+    from .browser import TikTokBrowser
 
     path = Path(item.path)
     if not path.is_file():
         raise FileNotFoundError(f"The video file is missing: {path}")
     caption = compose_caption(item, s)
     privacy = item.privacy or s.default_privacy
-    if methods.uses_api(account):
-        from .api import TikTokAPI
-
-        ready, why = methods.can_post(s, account)
-        if not ready:
-            raise RuntimeError(why)
-        drafts = account.post_with == methods.API_DRAFT
-        status = TikTokAPI(s, account.tokens_path(), log).post(
-            path, caption, privacy, s.allow_comments, s.allow_duet, s.allow_stitch, s.ai_generated_label,
-            inbox=drafts, progress=progress, cancelled=cancelled, expected_user=account.username,
-            audited=s.api_audited, duration=item.duration)
-        ids = status.get("publicaly_available_post_id") or []
-        return {"publish_id": status.get("publish_id", ""), "tiktok_id": str(ids[0]) if ids else "",
-                "via": account.post_with}
-
-    from .browser import TikTokBrowser
-
     with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
         b.upload(path, caption, privacy, s.allow_comments, s.allow_duet, s.allow_stitch,
                  s.ai_generated_label, progress=progress, expected_user=account.username)
-    return {"via": methods.BROWSER}
+    return {"via": "browser"}
 
 
-def refresh_account(s: Settings, account: Account, log: Callable[[str], None],
-                    cancelled: Callable[[], bool]) -> tuple[Profile, list[TikTokVideo]]:
-    """The account's profile numbers and videos: from the official API when it's connected (no
-    browser window), else (or when the API can't answer) from its browser login."""
-    from . import methods
-
-    username = account.username
-    if methods.app_ready(s) and methods.api_connected(account):
-        import requests
-
-        from .api import ApiError, TikTokAPI
-
-        try:
-            api = TikTokAPI(s, account.tokens_path(), log)
-            profile = api.profile()
-            return profile, api.videos(username=profile.username)
-        except (ApiError, requests.RequestException, OSError, ValueError) as exc:
-            if not account.logged_in:
-                raise
-            log(f"The TikTok API couldn't read {account.handle}'s stats ({exc}); reading them through the browser.")
-
+def refresh_account(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
+                    max_videos: int = 120, headless: bool | None = None) -> tuple[Profile, list[TikTokVideo]]:
+    """The account's profile numbers and videos, read from its TikTok profile page in its browser."""
     from .browser import TikTokBrowser
 
-    with TikTokBrowser(s, account.browser_dir(), log, cancelled=cancelled) as b:
-        if not username:  # public profiles can be read logged out; finding "me" needs the login
+    with TikTokBrowser(s, account.browser_dir(), log, headless=headless, cancelled=cancelled) as b:
+        if not account.username:  # public profiles can be read logged out; finding "me" needs the login
             b.require_login()
-        return b.fetch_account(username)
-
-
-def connect_api(s: Settings, account: Account, log: Callable[[str], None],
-                cancelled: Callable[[], bool]) -> str:
-    """Connect the account to the official API: TikTok's approval page opens in the account's own
-    browser profile (where it's already logged in to TikTok). Returns the approved @username."""
-    from . import methods
-    from .api import READ_SCOPES, SCOPES, TikTokAPI
-    from .login import BrowserWindow
-
-    api = TikTokAPI(s, account.tokens_path(), log)
-    # Only ask for posting when the account posts with the API: an app made just for the live view
-    # has no Content Posting API, and TikTok refuses the whole page over a permission the app lacks.
-    api.connect(cancelled=cancelled, open_page=lambda url: BrowserWindow.open(s, account.browser_dir(), url),
-                scopes=SCOPES if methods.uses_api(account) else READ_SCOPES)
-    return api.profile().username
-
-
-def disconnect_api(s: Settings, account: Account, log: Callable[[str], None]) -> None:
-    from .api import TikTokAPI
-
-    TikTokAPI(s, account.tokens_path(), log).disconnect()
-
-
-def check_api(s: Settings, account: Account, log: Callable[[str], None]) -> tuple[str, list[str]]:
-    """Test the account's API connection for how it posts, without posting: ("ok" | "warn", lines)."""
-    from . import methods
-    from .api import TikTokAPI
-
-    return TikTokAPI(s, account.tokens_path(), log).check(drafts=account.post_with == methods.API_DRAFT,
-                                                         audited=s.api_audited, posting=methods.uses_api(account))
+        return b.fetch_account(account.username, max_videos=max_videos)
 
 
 def check_upload(s: Settings, account: Account, log: Callable[[str], None], cancelled: Callable[[], bool],
@@ -159,8 +91,7 @@ def apply_profile(s: Settings, account: Account, log: Callable[[str], None],
                   cancelled: Callable[[], bool]) -> tuple[list[str], str]:
     """Put the account's photo, name and bio (profile.py) on TikTok through its Edit profile box.
 
-    Uses the account's browser login however the account posts: TikTok's API can't edit
-    profiles. Returns (what was changed, e.g. ["photo", "bio"], a note on anything TikTok wouldn't
+    Returns (what was changed, e.g. ["photo", "bio"], a note on anything TikTok wouldn't
     change yet, such as a name changed less than 7 days ago); raises if TikTok didn't take it.
     """
     from ..profile import photo_path
