@@ -78,14 +78,18 @@ def installed() -> bool:
     return settings_path().is_file()
 
 
-def ai_key() -> str:
-    """The Anthropic API key saved in ClipMonster on this PC, if any, so one key serves both apps."""
+def ai_key(provider: str = "claude") -> str:
+    """The Anthropic (provider "claude") or Gemini ("gemini") API key saved in ClipMonster on this PC,
+    if any, so one key serves both apps."""
     try:
         data = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    key = data.get("ai_api_key") if isinstance(data, dict) else ""
-    return key.strip() if isinstance(key, str) and key.strip().startswith("sk-") else ""
+    key = data.get("gemini_api_key" if provider == "gemini" else "ai_api_key") if isinstance(data, dict) else ""
+    key = key.strip() if isinstance(key, str) else ""
+    if provider == "gemini":
+        return key if key and " " not in key else ""
+    return key if key.startswith("sk-") else ""
 
 
 def output_folders() -> list[Path]:

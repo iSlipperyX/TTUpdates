@@ -53,7 +53,7 @@ def analyze_item(store: Store, item_id: str, s: Settings) -> VideoItem:
 
 def ai_item(store: Store, item_id: str, s: Settings, log: Log | None = None,
             account: Account | None = None) -> VideoItem:
-    """Claude rates the video and writes a caption, for `account`'s niche when one is given."""
+    """The AI rates the video and writes a caption, for `account`'s niche when one is given."""
     from .ai import rate
 
     item = store.get(item_id)
@@ -113,7 +113,7 @@ def clip_context(item: VideoItem) -> dict:
 
 def ai_hashtags(store: Store, item_id: str, s: Settings, account: Account | None = None, log: Log | None = None,
                 only_if_empty: bool = False) -> VideoItem:
-    """Claude writes the clip's hashtags (text only). With `only_if_empty`, hashtags you or an AI
+    """The AI writes the clip's hashtags (text only). With `only_if_empty`, hashtags you or an AI
     rating already gave it are kept (used for clips arriving from watched folders)."""
     from .ai import suggest_hashtags
 
@@ -127,9 +127,9 @@ def ai_hashtags(store: Store, item_id: str, s: Settings, account: Account | None
                             always=a.default_hashtags if a else s.default_hashtags,
                             proven=proven_tags(store, a.id) if a else None, context=clip_context(item))
     if not tags:
-        raise RuntimeError("Claude didn't come up with hashtags that fit; add them yourself.")
+        raise RuntimeError("The AI didn't come up with hashtags that fit; add them yourself.")
     with store.lock:
-        if only_if_empty and item.hashtags.strip():  # typed in while Claude was thinking
+        if only_if_empty and item.hashtags.strip():  # typed in while the AI was thinking
             return item
         item.hashtags = " ".join("#" + t for t in tags)
     if log:
@@ -145,7 +145,7 @@ def recombine(item: VideoItem, s: Settings) -> None:
     ai = ai_part(item.ai)
     if ai is not None:
         parts["ai"] = ai
-        item.score.setdefault("notes", {})["ai"] = "Claude's prediction of viewer appeal"
+        item.score.setdefault("notes", {})["ai"] = "The AI's prediction of viewer appeal"
     if item.source_score is not None:
         parts["source"] = round(max(0.0, min(100.0, item.source_score)), 1)
     item.score["parts"] = parts

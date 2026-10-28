@@ -126,23 +126,48 @@ class SettingsDialog(QDialog):
         self._build_ready_tab(tabs, settings, accounts or [])
 
         # AI
-        f = _form(tabs, "AI", "Optional. Claude watches frames from each clip, predicts how it will do on "
+        f = _form(tabs, "AI", "Optional. The AI watches frames from each clip, predicts how it will do on "
                               "TikTok and writes a caption and hashtags; ✨ Hashtags writes just the hashtags "
-                              "(quicker and cheaper). Uses your Anthropic API key (console.anthropic.com); each "
-                              "one is a single API call.")
+                              "(quicker and cheaper). Each one is a single API call. Use Claude (an Anthropic "
+                              "API key from console.anthropic.com) or Gemini (a free Gemini API key from "
+                              "aistudio.google.com/apikey; Google may use what free keys send to improve its "
+                              "products).")
+        from ..clipmonster import ai_key as clipmonster_key
+        from ..gemini import MODELS as GEMINI_MODELS
+
+        self.ai_provider = _combo([("claude", "Claude (Anthropic)"), ("gemini", "Gemini (Google)")],
+                                  settings.ai_provider)
+        f.addRow("AI to use", self.ai_provider)
+        self.ai_fallback = QCheckBox("If it fails, try the other AI")
+        self.ai_fallback.setToolTip("When the AI above can't answer (no key, a rejected key, a used-up quota, busy "
+                                    "servers), the other AI is asked instead, if it has a key")
+        self.ai_fallback.setChecked(settings.ai_fallback)
+        f.addRow("", self.ai_fallback)
+        shared = [n for n, p in (("Claude", "claude"), ("Gemini", "gemini")) if clipmonster_key(p)]
         self.ai_key = QLineEdit(settings.ai_api_key)
         self.ai_key.setEchoMode(QLineEdit.Password)
-        from ..clipmonster import ai_key as clipmonster_key
-
-        shared = bool(clipmonster_key())
-        self.ai_key.setPlaceholderText("leave empty to use ClipMonster's key" if shared else "sk-ant-…")
-        f.addRow("Anthropic API key", self.ai_key)
-        if shared:
-            f.addRow("", label("ClipMonster on this PC has a key, so the AI works without one here. A key typed "
-                               "above is used instead.", "muted", wrap=True))
+        self.ai_key.setPlaceholderText("leave empty to use ClipMonster's key" if "Claude" in shared else "sk-ant-…")
+        f.addRow("Anthropic API key (Claude)", self.ai_key)
         self.ai_model = _combo([("claude-opus-5-5", "Claude Opus 5.5 (best)"), ("claude-sonnet-5-5", "Claude Sonnet 5.5 (cheaper)"),
                                 ("claude-haiku-5-5", "Claude Haiku 5.5 (cheapest)")], settings.ai_model)
-        f.addRow("Model", self.ai_model)
+        f.addRow("Claude model", self.ai_model)
+        self.gemini_key = QLineEdit(settings.gemini_api_key)
+        self.gemini_key.setEchoMode(QLineEdit.Password)
+        self.gemini_key.setPlaceholderText("leave empty to use ClipMonster's key" if "Gemini" in shared else "AIza…")
+        f.addRow("Gemini API key", self.gemini_key)
+        self.gemini_model = _combo(list(GEMINI_MODELS), settings.gemini_model)
+        f.addRow("Gemini model", self.gemini_model)
+        if shared:
+            f.addRow("", label(f"ClipMonster on this PC has a {' and a '.join(shared)} key, so the AI works without "
+                               "one here. A key typed above is used instead.", "muted", wrap=True))
+        test_row = QHBoxLayout()
+        test = QPushButton("Test keys")
+        test.setToolTip("Checks each key, and that it can use the model picked for it. Uses no tokens.")
+        self.key_result = label("", "muted", wrap=True)
+        test.clicked.connect(self._test_keys)
+        test_row.addWidget(test)
+        test_row.addWidget(self.key_result, 1)
+        f.addRow("", test_row)
         f.addRow("Niche / audience", label("Set for each account in Manage accounts, so captions fit "
                                            "each account's audience.", "muted", wrap=True))
         self.tag_count = QSpinBox(minimum=0, maximum=10, value=settings.ai_hashtag_count)
@@ -240,12 +265,12 @@ class SettingsDialog(QDialog):
         self.watch_target = _combo(options, settings.watch_target)
         f.addRow("New clips", self.watch_target)
         self.watch_ai = QCheckBox("Write an AI caption for each new clip")
-        self.watch_ai.setToolTip("One Claude call per clip, with the key on the AI tab. ClipMonster's hook is used "
+        self.watch_ai.setToolTip("One AI call per clip, with the key on the AI tab. ClipMonster's hook is used "
                                  "as the caption otherwise")
         self.watch_ai.setChecked(settings.watch_ai)
         f.addRow("", self.watch_ai)
         self.watch_tags = QCheckBox("Write AI hashtags for each new clip")
-        self.watch_tags.setToolTip("A quick text-only Claude call per clip (much cheaper than an AI caption), with "
+        self.watch_tags.setToolTip("A quick text-only AI call per clip (much cheaper than an AI caption), with "
                                    "the key on the AI tab. Clips that already have hashtags keep them")
         self.watch_tags.setChecked(settings.watch_hashtags)
         f.addRow("", self.watch_tags)
@@ -318,6 +343,33 @@ class SettingsDialog(QDialog):
         self.live_show.setChecked(settings.live_show_browser)
         f.addRow("", self.live_show)
 
+    def _test_keys(self) -> None:
+        """Check the keys as typed (not yet saved): the chosen AI first, then the other one if it has a key."""
+        from copy import copy
+
+        from .. import ai
+
+        t = copy(self.s)
+        t.ai_provider, t.ai_model, t.gemini_model = (self.ai_provider.currentData(), self.ai_model.currentData(),
+                                                     self.gemini_model.currentData())
+        t.ai_api_key, t.gemini_api_key = self.ai_key.text().strip(), self.gemini_key.text().strip()
+        self.key_result.setText("Checking…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        lines, ok = [], True
+        try:
+            first = ai.chosen(t)
+            for provider in [first] + [p for p in ai.NAMES if p != first and ai.api_key(t, p)]:
+                try:
+                    lines.append(f"✓ {ai.check_key(t, provider)}")
+                except Exception as exc:
+                    lines.append(f"✗ {ai.name(provider)}: {exc}")
+                    ok = ok and provider != first
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.key_result.setText("\n".join(lines))
+        self.key_result.setStyleSheet(f"color:{theme.GOOD if ok else theme.BAD};")
+
     def _add_watch(self, path: str) -> None:
         existing = {self.watch_list.item(i).text() for i in range(self.watch_list.count())}
         if path and path not in existing:
@@ -358,8 +410,12 @@ class SettingsDialog(QDialog):
         s.caption_template = self.template.text().strip() or "{caption} {hashtags}"
         s.minimize_to_tray = self.tray.isChecked()
         s.start_with_windows = self.startup.isChecked()
+        s.ai_provider = self.ai_provider.currentData()
+        s.ai_fallback = self.ai_fallback.isChecked()
         s.ai_api_key = self.ai_key.text().strip()
         s.ai_model = self.ai_model.currentData()
+        s.gemini_api_key = self.gemini_key.text().strip()
+        s.gemini_model = self.gemini_model.currentData()
         s.ai_hashtag_count = self.tag_count.value()
         s.live_interval = int(self.live_interval.currentData())
         s.live_alerts = self.live_alerts.isChecked()

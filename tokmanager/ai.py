@@ -1,6 +1,7 @@
-"""Optional AI: Claude rates a clip from its frames and writes a caption and hashtags (rate), writes
-just hashtags from what's known about a clip (suggest_hashtags, text only, so quick and cheap) and
-suggests bios. Needs an Anthropic API key: the one in Settings → AI, else ClipMonster's."""
+"""Optional AI: rates a clip from its frames and writes a caption and hashtags (rate), writes just
+hashtags from what's known about a clip (suggest_hashtags, text only, so quick and cheap) and
+suggests bios. Settings → AI chooses Claude (Anthropic API key) or Gemini (Gemini API key); a key
+left empty there is borrowed from ClipMonster on this PC. ask_json is the one place either is called."""
 
 from __future__ import annotations
 
@@ -39,21 +40,168 @@ SYSTEM = (
 )
 
 
-NO_KEY = "Add your Anthropic API key in Settings → AI"
+NO_KEY = "Add a Claude or Gemini API key in Settings → AI"
+NAMES = {"claude": "Claude", "gemini": "Gemini"}
+KEY_FIELDS = {"claude": "ai_api_key", "gemini": "gemini_api_key"}
+MODEL_FIELDS = {"claude": "ai_model", "gemini": "gemini_model"}
 
 
-def api_key(s: Settings) -> str:
-    """The key to use: TikTok Manager's own, else the one ClipMonster has on this PC."""
-    return s.ai_api_key.strip() or clipmonster.ai_key()
+class AIError(RuntimeError):
+    """A plain-English reason the AI didn't answer."""
+
+
+def chosen(s: Settings) -> str:
+    p = str(getattr(s, "ai_provider", "claude") or "claude").lower()
+    return p if p in NAMES else "claude"
+
+
+def name(provider: str) -> str:
+    return NAMES.get(provider, "AI")
+
+
+def api_key(s: Settings, provider: str = "") -> str:
+    """That AI's key: TikTok Manager's own, else the one ClipMonster has on this PC."""
+    provider = provider or chosen(s)
+    return str(getattr(s, KEY_FIELDS[provider], "") or "").strip() or clipmonster.ai_key(provider)
+
+
+def order(s: Settings) -> list[str]:
+    """The AIs to ask, in turn: the chosen one when it has a key, then (with "If it fails, try the other
+    AI" on) the other one when it has a key."""
+    first = chosen(s)
+    out = [first] if api_key(s, first) else []
+    if getattr(s, "ai_fallback", True):
+        out += [p for p in NAMES if p != first and api_key(s, p)]
+    return out
 
 
 def has_key(s: Settings) -> bool:
-    return bool(api_key(s))
+    return bool(order(s))
+
+
+def model_for(s: Settings, provider: str = "") -> str:
+    return str(getattr(s, MODEL_FIELDS[provider or chosen(s)]))
+
+
+def ask_json(s: Settings, system: str, content, schema: dict, *, max_tokens: int = 2000, effort: str = "",
+             stream: bool = False, log=None, what: str = "") -> tuple[dict, str]:
+    """Ask the AI Settings → AI chose for JSON matching `schema`; if it fails and the other AI has a key
+    (and falling back is on), ask that one. `content` is text or Anthropic-style text and base64 image
+    blocks. Returns (answer, model). Raises AIError."""
+    providers = order(s)
+    if not providers:
+        raise AIError(f"{NO_KEY}.")
+    failures: list[tuple[str, Exception]] = []
+    for provider in providers:
+        model = model_for(s, provider)
+        if failures and log:
+            log(f"{name(failures[-1][0])} didn't work: {failures[-1][1]} Trying {name(provider)} instead.")
+        if log and what:
+            log(f"Asking {model} to {what}…")
+        try:
+            if provider == "gemini":
+                text, used = _ask_gemini(api_key(s, provider), model, system, content, schema, max_tokens,
+                                         effort)
+            else:
+                text, used = _ask_claude(api_key(s, provider), model, system, content, schema, max_tokens,
+                                         effort, stream)
+            try:
+                data = json.loads(text)
+            except ValueError as exc:
+                raise AIError(f"{name(provider)}'s answer couldn't be read; try again.") from exc
+            if not isinstance(data, dict):
+                raise AIError(f"{name(provider)}'s answer couldn't be read; try again.")
+            return data, used or model
+        except AIError as exc:
+            failures.append((provider, exc))
+    if len(failures) == 1:
+        raise failures[0][1]
+    raise AIError(" ".join(f"{name(p)}: {e}" for p, e in failures))
+
+
+def _ask_claude(key: str, model: str, system: str, content, schema: dict, max_tokens: int, effort: str,
+                stream: bool) -> tuple[str, str]:
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key, max_retries=3)
+    messages = [{"role": "user", "content": content}]
+    output = {"format": {"type": "json_schema", "schema": schema}} | ({"effort": effort} if effort else {})
+    try:
+        if stream:
+            # `fallbacks: "default"` lets the API re-run a safety-declined request on its recommended
+            # fallback model.
+            with client.beta.messages.stream(
+                model=model, max_tokens=max_tokens, system=system, messages=messages, output_config=output,
+                betas=["server-side-fallback-2026-07-01"], extra_body={"fallbacks": "default"},
+            ) as answer:
+                response = answer.get_final_message()
+        else:
+            response = client.messages.create(model=model, max_tokens=max_tokens, system=system,
+                                              messages=messages, output_config=output)
+    except Exception as exc:
+        if isinstance(exc, getattr(anthropic, "APIError", ())) or isinstance(exc, TypeError):
+            raise AIError(_claude_error(exc, model)) from exc
+        raise
+    if response.stop_reason == "refusal":
+        raise AIError("Claude declined to answer.")
+    if response.stop_reason == "max_tokens":
+        raise AIError("Claude's answer was cut off; try again.")
+    text = "".join(b.text for b in response.content if b.type == "text") or "{}"
+    return text, getattr(response, "model", None) or model
+
+
+def _claude_error(exc: Exception, model: str) -> str:
+    status = getattr(exc, "status_code", 0) or 0
+    if status == 401:
+        return "The Anthropic API key was rejected. Check it was copied completely (it starts with sk-ant-)."
+    if status == 404:
+        return f"{model} isn't available to this key. Pick another model in Settings → AI."
+    if status == 429:
+        return "Anthropic is rate-limiting this key. Wait a minute and try again."
+    if status >= 500:
+        return f"Anthropic's servers are busy (error {status}). Try again shortly."
+    if exc.__class__.__name__ == "APIConnectionError":
+        return "Couldn't reach the Anthropic API. Check your internet connection."
+    return str(exc) or exc.__class__.__name__
+
+
+def _ask_gemini(key: str, model: str, system: str, content, schema: dict, max_tokens: int,
+                effort: str) -> tuple[str, str]:
+    from . import gemini
+
+    try:
+        # Gemini counts its thinking inside the output limit, so it gets more room.
+        reply = gemini.generate(key, model, system, content, schema, effort=effort or "low",
+                                max_tokens=max(4000, max_tokens * 2))
+    except gemini.GeminiError as exc:
+        raise AIError(str(exc)) from exc
+    return reply.text, reply.model
+
+
+def check_key(s: Settings, provider: str = "") -> str:
+    """Confirm that AI's key works and can use its model, by looking the model up (costs no tokens)."""
+    provider = provider or chosen(s)
+    key, model = api_key(s, provider), model_for(s, provider)
+    if not key:
+        raise AIError(f"No {name(provider)} API key set.")
+    if provider == "gemini":
+        from . import gemini
+
+        try:
+            found = gemini.check_model(key, model)
+        except gemini.GeminiError as exc:
+            raise AIError(str(exc)) from exc
+    else:
+        import anthropic
+
+        try:
+            found = anthropic.Anthropic(api_key=key, max_retries=1, timeout=20).models.retrieve(model).display_name
+        except Exception as exc:
+            raise AIError(_claude_error(exc, model)) from exc
+    return f"{name(provider)} key works. {found} is ready."
 
 
 def rate(item: VideoItem, s: Settings, log=None) -> dict:
-    import anthropic
-
     if not has_key(s):
         raise RuntimeError(f"{NO_KEY} to use AI scoring.")
     frames = sample_frames(Path(item.path), item.duration, FRAME_COUNT)
@@ -80,30 +228,11 @@ def rate(item: VideoItem, s: Settings, log=None) -> dict:
                                                     "data": base64.standard_b64encode(jpg).decode("ascii")}})
     content.append({"type": "text", "text": "\n".join(facts)})
 
-    client = anthropic.Anthropic(api_key=api_key(s), max_retries=3)
-    if log:
-        log(f"Asking {s.ai_model} to rate “{item.name}”…")
-    # `fallbacks: "default"` lets the API re-run a safety-declined request on its recommended fallback model.
-    with client.beta.messages.stream(
-        model=s.ai_model,
-        max_tokens=16000,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": content}],
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-        betas=["server-side-fallback-2026-07-01"],
-        extra_body={"fallbacks": "default"},
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to rate this video.")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("Claude's answer was cut off; try again.")
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    data = json.loads(text)
+    data, _model = ask_json(s, SYSTEM, content, SCHEMA, max_tokens=16000, effort="medium", stream=True, log=log,
+                            what=f"rate “{item.name}”")
     data["appeal"] = max(1, min(100, int(data.get("appeal", 50))))
     data["hook"] = max(1, min(100, int(data.get("hook", 50))))
-    data["hashtags"] = [h.lstrip("#").strip() for h in data.get("hashtags", []) if h.strip()]
+    data["hashtags"] = [h.lstrip("#").strip() for h in data.get("hashtags", []) if isinstance(h, str) and h.strip()]
     return data
 
 
@@ -121,8 +250,6 @@ BIO_SCHEMA = {
 def suggest_bios(s: Settings, niche: str, username: str = "", name: str = "", current: str = "",
                  examples: list[str] | None = None) -> list[str]:
     """Three short TikTok bios for an account, from its niche (and its best captions, if any)."""
-    import anthropic
-
     from .profile import BIO_MAX
 
     if not has_key(s):
@@ -139,20 +266,12 @@ def suggest_bios(s: Settings, niche: str, username: str = "", name: str = "", cu
     if examples:
         facts.append("Captions of some of its posts:\n" + "\n".join(f"- {c}" for c in examples[:8]))
     facts.append(f"Write three different bios, each at most {BIO_MAX} characters including emoji and spaces.")
-    client = anthropic.Anthropic(api_key=api_key(s), max_retries=3)
-    response = client.messages.create(
-        model=s.ai_model,
-        max_tokens=2000,
-        system=("You write TikTok bios for clip accounts. A good bio says in a few words what the viewer gets "
-                "and why they should follow, in the account's own voice. At most one or two emoji, no hashtags, "
-                "no links, no claims the account can't back up, and nothing that sounds like spam."),
-        messages=[{"role": "user", "content": "\n".join(facts)}],
-        output_config={"format": {"type": "json_schema", "schema": BIO_SCHEMA}},
-    )
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to write a bio for this account.")
-    text = next((b.text for b in response.content if b.type == "text"), "{}")
-    bios = [" ".join(b.split()) for b in json.loads(text).get("bios", []) if b.strip()]
+    data, _model = ask_json(
+        s, ("You write TikTok bios for clip accounts. A good bio says in a few words what the viewer gets "
+            "and why they should follow, in the account's own voice. At most one or two emoji, no hashtags, "
+            "no links, no claims the account can't back up, and nothing that sounds like spam."),
+        "\n".join(facts), BIO_SCHEMA, max_tokens=2000)
+    bios = [" ".join(b.split()) for b in data.get("bios", []) if isinstance(b, str) and b.strip()]
     return [b if len(b) <= BIO_MAX else b[:BIO_MAX - 1].rstrip() + "…" for b in bios][:3]
 
 
@@ -188,8 +307,6 @@ def suggest_hashtags(s: Settings, item: VideoItem, niche: str = "", always: str 
     hashtags that did best so far with their median views, `context` ClipMonster's facts about
     the clip (source_title, channel, reason) when the item doesn't carry them.
     """
-    import anthropic
-
     from .tiktok import normalize_hashtags
 
     if not has_key(s):
@@ -214,18 +331,8 @@ def suggest_hashtags(s: Settings, item: VideoItem, niche: str = "", always: str 
         facts.append("Hashtags that did best on this account so far (median views): " +
                      ", ".join(f"#{t} ({v:,})" for t, v in proven) + ". Reuse them only where they fit this clip.")
     facts.append(f"Give exactly {count} hashtags.")
-    client = anthropic.Anthropic(api_key=api_key(s), max_retries=3)
-    response = client.messages.create(
-        model=s.ai_model,
-        max_tokens=1000,
-        system=HASHTAG_SYSTEM,
-        messages=[{"role": "user", "content": "\n".join(facts)}],
-        output_config={"format": {"type": "json_schema", "schema": HASHTAG_SCHEMA}},
-    )
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to suggest hashtags for this clip.")
-    text = next((b.text for b in response.content if b.type == "text"), "{}")
-    return clean_hashtags(json.loads(text).get("hashtags", []), always_tags, count)
+    data, _model = ask_json(s, HASHTAG_SYSTEM, "\n".join(facts), HASHTAG_SCHEMA, max_tokens=1000)
+    return clean_hashtags(data.get("hashtags") or [], always_tags, count)
 
 
 def clean_hashtags(raw: list, always: list[str], count: int) -> list[str]:

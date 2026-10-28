@@ -276,7 +276,7 @@ def score(a: Analysis, s: Settings, source_score: float | None = None, ai_score:
         out.notes["source"] = "ClipMonster's interest score for this moment"
     if ai_score is not None:
         out.parts["ai"] = round(clamp(ai_score), 1)
-        out.notes["ai"] = "Claude's prediction of viewer appeal"
+        out.notes["ai"] = "The AI's prediction of viewer appeal"
     out.tips = list(dict.fromkeys(tips))  # drop repeats, keep order
     out.total = combine(out.parts, s)
     return out
