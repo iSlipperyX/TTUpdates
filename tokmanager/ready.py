@@ -33,6 +33,23 @@ def import_watched(store: Store, folders: list[str], now: float | None = None) -
     return store.add_paths(roots, watched=True, now=now) if roots else []
 
 
+def watch_roots(s: Settings) -> list[str]:
+    """The folders new clips come in from: the watched folders, and the Google Drive inbox when
+    clips are being brought in from Drive (drive_sync.py)."""
+    folders = [f for f in s.watch_folders if f]
+    if s.drive_on:
+        from .drive_sync import inbox
+
+        box = inbox(s)
+        try:
+            box.mkdir(parents=True, exist_ok=True)  # there before the first clip, so it never reads as missing
+        except OSError:
+            pass
+        if not watched(folders, box):
+            folders.append(str(box))
+    return folders
+
+
 def same_folder(a: str | Path, b: str | Path) -> bool:
     """ClipMonster writes "C:/Users/…/TTVIDEOS", Windows' folder picker "C:\\Users\\…\\TTVIDEOS"."""
     def norm(p) -> str:

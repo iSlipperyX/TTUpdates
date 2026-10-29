@@ -1,19 +1,21 @@
-"""Settings dialog: scoring weights, posting defaults, AI, the Live page, updates."""
+"""Settings dialog: scoring weights, posting defaults, AI, the Live page, Google Drive, updates."""
 
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from dataclasses import fields
 from typing import Callable
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
-                               QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+                               QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QProgressDialog,
+                               QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import clipmonster, diagnostics, phone, ready, updater
 from ..config import VERSION, Settings, Weights, app_dir
+from ..gdrive import SETUP_HELP as DRIVE_HELP
 from ..scoring import PART_LABELS
 from . import theme
 from .widgets import label
@@ -55,6 +57,7 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(760, 620)
         self.s = settings
         self.setup_requested = False  # "Run setup again" was pressed: the main window opens it after saving
+        self.drive_check_requested = False  # "Save and check now" on the Google Drive tab
         root = QVBoxLayout(self)
         tabs = QTabWidget()
         self.tabs = tabs
@@ -175,6 +178,9 @@ class SettingsDialog(QDialog):
 
         # Live
         self._build_live_tab(tabs, settings)
+
+        # Google Drive
+        self._build_drive_tab(tabs, settings)
 
         # Updates
         f = _form(tabs, "Updates", "New versions are published as releases on GitHub. Installing one replaces only "
@@ -343,6 +349,198 @@ class SettingsDialog(QDialog):
         self.live_show.setChecked(settings.live_show_browser)
         f.addRow("", self.live_show)
 
+    def _build_drive_tab(self, tabs: QTabWidget, settings: Settings) -> None:
+        from .. import drive_sync
+
+        f = _form(tabs, "Google Drive", "ClipMonster can upload every clip it finishes to your Google Drive (its "
+                                        "Settings → Upload). Turn this on and TikTok Manager downloads the clips "
+                                        "it hasn't got from there every few minutes, with their titles, scores "
+                                        "and niches, and they come in like clips from a watched folder. Handy on "
+                                        "a PC that isn't the one ClipMonster runs on, or after ClipMonster's "
+                                        "Clean up cleared its copies.")
+        self.drive_on = QCheckBox("Bring in the clips ClipMonster uploads to Google Drive")
+        self.drive_on.setChecked(settings.drive_on)
+        f.addRow("", self.drive_on)
+        cm_id, _ = clipmonster.drive_client()
+        self.drive_id = QLineEdit(settings.drive_client_id)
+        self.drive_id.setPlaceholderText("leave empty to use ClipMonster's" if cm_id else
+                                         "….apps.googleusercontent.com")
+        f.addRow("Google OAuth client ID", self.drive_id)
+        self.drive_secret = QLineEdit(settings.drive_client_secret)
+        self.drive_secret.setEchoMode(QLineEdit.Password)
+        self.drive_secret.setPlaceholderText("leave empty to use ClipMonster's" if cm_id else "GOCSPX-…")
+        f.addRow("Google OAuth client secret", self.drive_secret)
+        link = f"style='color:{theme.ACCENT_2}'"
+        how = label("ClipMonster on this PC uploads to Google Drive, so TikTok Manager uses the same Google "
+                    "sign-in details: leave these empty and sign in below." if cm_id else
+                    "Paste the client ID and secret from ClipMonster → Settings → Upload, on the PC ClipMonster "
+                    "runs on. They must be the same ones: Google only lets TikTok Manager see ClipMonster's clips "
+                    f"if both use the same Google Cloud project. <a href='{DRIVE_HELP}' {link}>How to</a>",
+                    "muted", wrap=True)
+        how.setTextFormat(Qt.RichText)
+        how.setOpenExternalLinks(True)
+        f.addRow("", how)
+        self.drive_status = label("", "muted", wrap=True)
+        sign_in = QPushButton("Sign in to Google Drive…")
+        sign_in.setToolTip("Opens Google's sign-in page in your browser. TikTok Manager only gets to see the files "
+                           "ClipMonster (and TikTok Manager) put in your Drive, nothing else")
+        sign_in.clicked.connect(self._drive_sign_in)
+        self.drive_out = QPushButton("Sign out")
+        self.drive_out.setToolTip("Forgets the sign-in on this PC. ClipMonster stays signed in")
+        self.drive_out.clicked.connect(self._drive_sign_out)
+        row = QHBoxLayout()
+        row.addWidget(sign_in)
+        row.addWidget(self.drive_out)
+        row.addWidget(self.drive_status, 1)
+        f.addRow("Account", row)
+        self.drive_folder = QLineEdit(settings.drive_folder)
+        self.drive_folder.setPlaceholderText(clipmonster.drive_folder() or "ClipMonster")
+        self.drive_folder.setToolTip("The folder at the top of your Drive that ClipMonster uploads to (ClipMonster → "
+                                     "Settings → Upload → Folder in your Drive)")
+        f.addRow("Folder in your Drive", self.drive_folder)
+        self.drive_inbox = QLineEdit(settings.drive_inbox)
+        self.drive_inbox.setPlaceholderText(str(drive_sync.default_inbox()))
+        self.drive_inbox.setToolTip("Clips are downloaded here, in the same folders as in Drive. Clean up posted "
+                                    "videos clears them again once they're posted")
+        browse = QPushButton("…")
+        browse.setFixedWidth(34)
+        browse.clicked.connect(self._pick_drive_inbox)
+        row = QHBoxLayout()
+        row.addWidget(self.drive_inbox, 1)
+        row.addWidget(browse)
+        f.addRow("Download clips to", row)
+        self.drive_days = QSpinBox(minimum=0, maximum=365, value=max(0, settings.drive_days), suffix=" days")
+        self.drive_days.setSpecialValueText("Any time")
+        self.drive_days.setToolTip("Clips uploaded before this stay in Drive, so connecting to a Drive full of old "
+                                   "clips doesn't fill this PC with them")
+        f.addRow("Only clips uploaded in the last", self.drive_days)
+        f.addRow("", label("Clips already in TikTok Manager aren't downloaded again, and nor are clips you removed "
+                           "or cleaned up. Each clip downloaded is marked in Drive with this PC's name, so TikTok "
+                           "Manager on another PC leaves it alone and nothing gets posted twice.", "muted",
+                           wrap=True))
+        last = drive_sync.last()
+        self.drive_last = label("", "muted", wrap=True)
+        if last.get("at"):
+            when = dt.datetime.fromtimestamp(last["at"]).strftime("%d %b %H:%M")
+            self.drive_last.setText(f"Last checked {when}: {last.get('text', '')}")
+            if last.get("problem"):
+                self.drive_last.setStyleSheet(f"color:{theme.WARN};")
+        check = QPushButton("Save and check now")
+        check.clicked.connect(self._drive_check_now)
+        row = QHBoxLayout()
+        row.addWidget(check)
+        row.addWidget(self.drive_last, 1)
+        f.addRow("", row)
+        self.drive_id.textChanged.connect(self._drive_show_account)
+        self.drive_secret.textChanged.connect(self._drive_show_account)
+        self._drive_show_account()
+
+    def _drive_client(self) -> tuple[str, str]:
+        """The OAuth client as typed (not yet saved), else ClipMonster's."""
+        from copy import copy
+
+        from .. import drive_sync
+
+        t = copy(self.s)
+        t.drive_client_id, t.drive_client_secret = self.drive_id.text().strip(), self.drive_secret.text().strip()
+        cid, secret, _ = drive_sync.client(t)
+        return cid, secret
+
+    def _drive_show_account(self) -> None:
+        from .. import gdrive
+
+        cid, secret = self._drive_client()
+        account = gdrive.load_account(cid) if cid else None
+        if account is not None:
+            self.drive_status.setText(f"✓ Signed in{' as ' + account.email if account.email else ''}")
+            self.drive_status.setStyleSheet(f"color:{theme.GOOD};")
+        else:
+            self.drive_status.setText("Not signed in" if cid and secret else
+                                      "Needs the client ID and secret first")
+            self.drive_status.setStyleSheet("")
+        self.drive_out.setEnabled(account is not None)
+
+    def _drive_sign_in(self) -> None:
+        """Google's sign-in page in the browser; this waits (with Cancel) on a thread of its own."""
+        from .. import gdrive
+
+        cid, secret = self._drive_client()
+        if not cid or not secret:
+            self.drive_status.setText("Paste the client ID and secret first (from ClipMonster → Settings → Upload).")
+            self.drive_status.setStyleSheet(f"color:{theme.BAD};")
+            return
+        box = QProgressDialog("Google's sign-in page is open in your browser. Pick your account, allow access, "
+                              "then come back here.", "Cancel", 0, 0, self)
+        box.setWindowTitle("Sign in to Google Drive")
+        box.setWindowModality(Qt.WindowModal)
+        box.setMinimumDuration(0)
+        stop = threading.Event()
+        box.canceled.connect(stop.set)
+        result: dict = {}
+
+        def work() -> None:
+            try:
+                result["account"] = gdrive.sign_in(cid, secret, cancelled=stop.is_set)
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=work, name="google-sign-in", daemon=True)
+        timer = QTimer(self, interval=150)
+
+        def check() -> None:
+            if thread.is_alive():
+                return
+            timer.stop()
+            box.reset()
+            box.hide()
+            box.deleteLater()
+            self._drive_signed_in(result)
+
+        timer.timeout.connect(check)
+        thread.start()
+        timer.start()
+        box.show()
+        self._drive_waiting = (thread, stop)
+
+    def _drive_signed_in(self, result: dict) -> None:
+        self._drive_waiting = None
+        err = result.get("error")
+        if err is not None:
+            if getattr(err, "kind", "") == "cancelled":
+                self._drive_show_account()
+                return
+            self.drive_status.setText(f"✗ {err}")
+            self.drive_status.setStyleSheet(f"color:{theme.BAD};")
+            return
+        self._drive_show_account()
+        if not self.drive_on.isChecked():
+            self.drive_on.setChecked(True)  # signing in means you want the clips
+
+    def _drive_sign_out(self) -> None:
+        from .. import gdrive
+
+        gdrive.sign_out()
+        self._drive_show_account()
+
+    def _drive_check_now(self) -> None:
+        self.drive_check_requested = True
+        self.accept()
+
+    def _pick_drive_inbox(self) -> None:
+        from .. import drive_sync
+
+        folder = QFileDialog.getExistingDirectory(self, "Download clips from Google Drive to",
+                                                  self.drive_inbox.text() or str(drive_sync.default_inbox()))
+        if folder:
+            self.drive_inbox.setText(folder)
+
+    def done(self, result: int) -> None:
+        """Closing the window gives up on a sign-in still waiting for Google's page."""
+        waiting = getattr(self, "_drive_waiting", None)
+        if waiting:
+            waiting[1].set()
+        super().done(result)
+
     def _test_keys(self) -> None:
         """Check the keys as typed (not yet saved): the chosen AI first, then the other one if it has a key."""
         from copy import copy
@@ -429,6 +627,12 @@ class SettingsDialog(QDialog):
         s.share_results = self.share.isChecked()
         s.ready_folder = self.ready_folder.text().strip()
         s.phone_folder = self.phone_folder.text().strip()
+        s.drive_on = self.drive_on.isChecked()
+        s.drive_client_id = self.drive_id.text().strip()
+        s.drive_client_secret = self.drive_secret.text().strip()
+        s.drive_folder = self.drive_folder.text().strip().strip("/\\")
+        s.drive_inbox = self.drive_inbox.text().strip()
+        s.drive_days = self.drive_days.value()
         self._apply_update_fields()
 
     def _apply_update_fields(self) -> None:

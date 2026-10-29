@@ -66,12 +66,20 @@ def report(log_lines: int = 60) -> str:
     except Exception as exc:  # the report must work even when the app's files are the problem
         n_accounts = f"unknown ({exc})"
         watched = "unknown"
+    try:
+        from . import drive_sync
+
+        drive = "off" if not s.drive_on else (drive_sync.problem(s) or
+                                             f"on, last look: {drive_sync.last().get('text') or 'not yet'}")
+    except Exception as exc:
+        drive = f"unknown ({exc})"
     frozen = "installed app" if getattr(sys, "frozen", False) else "running from source"
     lines = [
         f"TikTok Manager {VERSION} ({frozen})",
         f"Windows: {platform.platform()}  Python {platform.python_version()}",
         f"Accounts: {n_accounts}, browser: {s.browser_channel}",
         f"Live view: {watched}",
+        f"Google Drive: {drive}",
         f"AI key: {'yes' if ai.has_key(s) else 'no'}, watched folders: {len(s.watch_folders)}, "
         f"phone folder: {'on' if s.phone_folder else 'off'}, setup done: {'yes' if s.setup_done else 'no'}, "
         f"auto updates: {'install' if s.auto_install_updates else 'check' if s.auto_check_updates else 'off'}",

@@ -56,7 +56,7 @@ def window(app):
     yield make
     for w in made:
         for timer in (w.autopilot_timer, w.watch_timer, w.update_timer, w.clock, w.phone_timer, w.phone_soon,
-                      w.live_monitor.timer, w.live.clock):
+                      w.drive_timer, w.live_monitor.timer, w.live.clock):
             timer.stop()
         if w._setup is not None:
             w._setup.close()
@@ -64,6 +64,7 @@ def window(app):
         w.state.cancel_all()
         w.state.analysis_pool.waitForDone(5000)
         w.state.tiktok_pool.waitForDone(5000)
+        w.state.drive_pool.waitForDone(5000)
         w.deleteLater()
     QApplication.processEvents()
 

@@ -34,7 +34,7 @@ from . import clipmonster
 from .accounts import Account, Accounts
 from .config import Settings, thumbs_dir
 from .media import VIDEO_EXTS
-from .ready import default_ready_folder, post_text, safe_name
+from .ready import default_ready_folder, post_text, safe_name, watch_roots
 from .store import Store, VideoItem, _key
 from .tiktok import compose_caption
 
@@ -167,7 +167,7 @@ def _origin(it: VideoItem) -> str:
 
 
 def _roots(s: Settings) -> list[Path]:
-    roots = [Path(f).expanduser() for f in s.watch_folders if f]
+    roots = [Path(f).expanduser() for f in watch_roots(s)]
     if clipmonster.installed():
         roots += clipmonster.output_folders()
     return roots

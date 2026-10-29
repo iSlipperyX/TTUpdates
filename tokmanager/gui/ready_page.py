@@ -20,7 +20,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from .. import ai, phone, ready, schedule
+from .. import ai, drive_sync, phone, ready, schedule
 from ..scoring import grade
 from ..store import VideoItem
 from . import theme
@@ -282,6 +282,8 @@ class ReadyPage(QWidget):
     settings_requested = Signal()
     watch_clipmonster_requested = Signal()
     phone_sync_requested = Signal()  # update the phone folder now
+    drive_settings_requested = Signal()  # Settings → Google Drive
+    drive_check_requested = Signal()  # look in Google Drive now
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -345,6 +347,10 @@ class ReadyPage(QWidget):
         self.phone_line.setTextFormat(Qt.RichText)
         self.phone_line.linkActivated.connect(self._link)
         root.addWidget(self.phone_line)
+        self.drive_line = label("", "muted", wrap=True)
+        self.drive_line.setTextFormat(Qt.RichText)
+        self.drive_line.linkActivated.connect(self._link)
+        root.addWidget(self.drive_line)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -391,9 +397,10 @@ class ReadyPage(QWidget):
         self.summary.setText((f"{a.label}: " if multi else "") + (f"{niche}: " if niche else "") + text +
                              (f" · {done} posted today ✓" if done else "") +
                              (f" · {hidden} more in other niches" if hidden else ""))
-        folders = [f for f in st.settings.watch_folders if f]
+        folders = ready.watch_roots(st.settings)
         self._show_hint(folders)
         self._show_phone()
+        self._show_drive()
         self.export_btn.setEnabled(bool(items))
         self.export_btn.setVisible(not st.settings.phone_folder)  # the phone folder does this by itself
         self.import_btn.setEnabled(bool(folders))
@@ -451,7 +458,9 @@ class ReadyPage(QWidget):
         st = self.state
         s, a = st.settings, st.active
         link = f"style='color:{theme.ACCENT_2}'"
-        where = ", ".join(_folder_name(f) for f in folders[:3]) + ("…" if len(folders) > 3 else "")
+        box = str(drive_sync.inbox(s)) if s.drive_on else ""
+        where = ", ".join("Google Drive" if box and ready.same_folder(f, box) else _folder_name(f)
+                          for f in folders[:3]) + ("…" if len(folders) > 3 else "")
         target = s.watch_target
         warn = False
         cm = ready.clipmonster_unwatched(s)
@@ -509,6 +518,24 @@ class ReadyPage(QWidget):
         self.phone_line.setText(text)
         self.phone_line.setVisible(bool(text))
 
+    def _show_drive(self) -> None:
+        """The Google Drive line, while clips are brought in from Drive: the last look, or what stops it."""
+        st = self.state
+        res = st.drive_result
+        link = f"style='color:{theme.ACCENT_2}'"
+        if not st.settings.drive_on:
+            text = ""
+        elif res is None:
+            text = "☁ Looking in Google Drive for ClipMonster's clips…"
+        elif res.problem:
+            text = (f"<span style='color:{theme.WARN}'>☁ Google Drive: {_esc(res.problem)}</span> "
+                    f"<a href='drive-settings' {link}>Settings</a> · <a href='drive-check' {link}>Try again</a>")
+        else:
+            text = (f"☁ Google Drive: {_esc(res.text())} Checked {_ago(res.at)} · "
+                    f"<a href='drive-check' {link}>Check now</a>")
+        self.drive_line.setText(text)
+        self.drive_line.setVisible(bool(text))
+
     def copy_back(self, item_id: str) -> None:
         """A clip deleted from the phone folder that wasn't posted after all: copy it there again."""
         folder = self.state.settings.phone_folder
@@ -535,6 +562,10 @@ class ReadyPage(QWidget):
             self.phone_sync_requested.emit()
         elif href == "open-phone":
             QDesktopServices.openUrl(QUrl.fromLocalFile(st.settings.phone_folder))
+        elif href == "drive-settings":
+            self.drive_settings_requested.emit()
+        elif href == "drive-check":
+            self.drive_check_requested.emit()
         elif href == "watch-cm":
             self.watch_clipmonster_requested.emit()
         elif href == "target-here":

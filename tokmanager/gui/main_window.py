@@ -16,10 +16,11 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QDialogButto
                                QProgressBar, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from .. import ai, jobs, niches, phone, ready, safefile, updater
+from .. import ai, drive_sync, jobs, niches, phone, ready, safefile, updater
 from ..accounts import Account
 from ..config import APP_NAME, VERSION
 from ..media import VIDEO_EXTS
+from ..store import _key
 from . import theme
 from .account import AccountPage
 from .accounts_dialog import AccountsDialog, account_status
@@ -38,7 +39,9 @@ AUTOPILOT_CHECK_MS = 30_000
 WATCH_CHECK_MS = 3 * 60_000
 FIRST_WATCH_CHECK_MS = 8_000
 PHONE_SYNC_DELAY_MS = 4_000  # after a change, so a burst of them (marking several posted) is one update
-PHONE_CHECK_MS = 10 * 60_000  # also notices clips deleted on the phone and the day changing
+PHONE_CHECK_MS = 10 * 60_000
+DRIVE_CHECK_MS = 10 * 60_000  # Google Drive (drive_sync.py): ClipMonster uploads a clip within minutes of making it
+FIRST_DRIVE_CHECK_MS = 15_000  # also notices clips deleted on the phone and the day changing
 UPDATE_CHECK_MS = 6 * 3600 * 1000
 FIRST_UPDATE_CHECK_MS = 20_000
 AUTO_INSTALL_QUIET_MINUTES = 20  # don't restart for an update if a post is due this soon
@@ -64,6 +67,11 @@ def set_start_with_windows(on: bool) -> None:
                 winreg.DeleteValue(key, "TikTokManager")
             except FileNotFoundError:
                 pass
+
+
+def drive_settings(s) -> tuple:
+    """The settings a look at Google Drive depends on, to look again as soon as one changes."""
+    return (s.drive_on, s.drive_client_id, s.drive_client_secret, s.drive_folder, s.drive_inbox, s.drive_days)
 
 
 class MainWindow(QMainWindow):
@@ -189,6 +197,8 @@ class MainWindow(QMainWindow):
         self.ready.settings_requested.connect(lambda: self.open_settings("Ready to upload"))
         self.ready.watch_clipmonster_requested.connect(lambda: self.offer_clipmonster(asked=True))
         self.ready.phone_sync_requested.connect(self.phone_sync)
+        self.ready.drive_settings_requested.connect(lambda: self.open_settings("Google Drive"))
+        self.ready.drive_check_requested.connect(lambda: self.drive_tick(manual=True))
         self.account.login_requested.connect(self.login)
         self.account.logout_requested.connect(self.logout)
         self.account.refresh_requested.connect(self.refresh_account)
@@ -236,6 +246,11 @@ class MainWindow(QMainWindow):
         state.library_changed.connect(self.phone_soon.start)
         state.account_changed.connect(self.phone_soon.start)
         self.phone_soon.start()
+        # Google Drive: clips ClipMonster uploaded are downloaded, then come in like a watched folder's.
+        self._drive_problem = ""
+        self.drive_timer = QTimer(self, interval=DRIVE_CHECK_MS, timeout=self.drive_tick)
+        self.drive_timer.start()
+        QTimer.singleShot(FIRST_DRIVE_CHECK_MS, self.drive_tick)
         # Updates: a first check shortly after start, then every few hours.
         self.pending_release: updater.Release | None = None
         self._staged: tuple[Path, updater.Release] | None = None
@@ -269,7 +284,7 @@ class MainWindow(QMainWindow):
         """The page for how the shown account posts: Ready (by hand) or Queue (autopilot). The Library when
         it's empty and no folder is watched, so there's somewhere to drop the first clips."""
         st = self.state
-        empty = not st.store.items and not any(st.settings.watch_folders)
+        empty = not st.store.items and not ready.watch_roots(st.settings)
         self.nav_buttons[0 if empty else 2 if st.active.autopilot else 1].click()
 
     def _show_recovered(self) -> None:
@@ -408,7 +423,7 @@ class MainWindow(QMainWindow):
         """Bring in new clips from the watched folders (on a worker thread), then score and queue them."""
         st = self.state
         s = st.settings
-        folders = [f for f in s.watch_folders if f]
+        folders = ready.watch_roots(s)
         if not folders or st.busy("watch"):
             return
 
@@ -450,6 +465,57 @@ class MainWindow(QMainWindow):
                 st.run(job, on_success=lambda _it: (st.save_soon(), st.library_changed.emit()))
 
         st.run(Job("Checking watched folders", work, kind="watch"), on_success=found, quiet=not manual)
+
+    def drive_tick(self, manual: bool = False) -> None:
+        """Download the clips ClipMonster uploaded to Google Drive that aren't here yet (on a worker
+        thread), then bring them in from the Drive inbox like a watched folder's."""
+        st = self.state
+        s = st.settings
+        if not s.drive_on or st.busy("drive"):
+            return
+        why = drive_sync.problem(s)
+        if why:
+            st.drive_result = drive_sync.Result(at=time.time(), problem=why)
+            self._drive_said(why, manual)
+            st.library_changed.emit()
+            return
+
+        def done(res: drive_sync.Result) -> None:
+            st.drive_result = res
+            if res.problem:
+                self._drive_said(res.problem, manual)
+            else:
+                self._drive_problem = ""
+                if res.downloaded or res.updated or manual:
+                    self._log(f"☁ Google Drive: {res.text()}")
+            if res.updated_paths:  # a new cut of a clip that's waiting: score it again
+                keys = {_key(p) for p in res.updated_paths}
+                self.library.score([i.id for i in st.store.all() if _key(i.path) in keys], force=True)
+            if res.downloaded or res.updated:
+                if st.busy("watch"):  # bring them in once the look that's running now is done
+                    QTimer.singleShot(30_000, self.watch_tick)
+                else:
+                    self.watch_tick()
+            st.library_changed.emit()
+
+        def failed(msg: str) -> None:
+            if msg != "Cancelled":
+                st.drive_result = drive_sync.Result(at=time.time(), problem=msg)
+                self._drive_said(msg, manual)
+                st.library_changed.emit()
+
+        job = Job("Checking Google Drive", lambda j: drive_sync.sync(st.store, s, j.log, j.cancelled, j.progress),
+                  kind="drive")
+        # "Downloading 03 - ….mp4 (40%)" in the status bar, while nothing else is running
+        job.signals.progress.connect(lambda m: self.job_label.setText(f"☁ {m}…")
+                                     if all(j.kind == "drive" for j in st.jobs) else None)
+        st.run(job, pool="drive", on_success=done, on_failure=failed, quiet=True)
+
+    def _drive_said(self, problem: str, manual: bool) -> None:
+        """A problem with Google Drive goes in the Activity log once (the Ready page keeps showing it)."""
+        if manual or problem != self._drive_problem:
+            self._log(f"⚠ Google Drive: {problem}")
+        self._drive_problem = problem
 
     def phone_sync(self) -> None:
         """Bring the phone folder up to date (on a worker thread): upcoming clips in, posted ones out."""
@@ -890,6 +956,7 @@ class MainWindow(QMainWindow):
                              accounts=[(a.id, a.label) for a in self.state.accounts],
                              tab=tab if isinstance(tab, str) else "")
         folder = self.state.settings.phone_folder
+        drive_before = drive_settings(self.state.settings)
         if dlg.exec():
             dlg.apply()
             self.state.save_settings()
@@ -907,6 +974,9 @@ class MainWindow(QMainWindow):
             if self.state.settings.phone_folder != folder:
                 self.state.phone_result, self.state.phone_error = None, ""
                 self.phone_sync()
+            if dlg.drive_check_requested or drive_settings(self.state.settings) != drive_before:
+                self._drive_problem = ""
+                self.drive_tick(manual=True)
             if dlg.setup_requested:
                 self.run_setup()
 

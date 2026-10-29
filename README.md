@@ -124,6 +124,23 @@ waiting), or all queued for one account.
   far. Untick **Tell ClipMonster how its clips do** in Settings → Ready to upload to stop it. Nothing
   leaves your PC.
 
+## Clips from Google Drive
+
+When ClipMonster uploads its clips to Google Drive (ClipMonster 2.8+, its Settings → Upload),
+**Settings → Google Drive** brings them in: every 10 minutes the clips TikTok Manager hasn't got are
+downloaded to **Videos\TikTok Manager\From Google Drive** and come in like a watched folder's, with
+their titles, scores, hooks, niches and part series. It signs in with ClipMonster's own Google
+client (read from ClipMonster on the same PC, or pasted on another PC), so there's nothing new to
+set up in Google Cloud.
+
+- Clips already here (from ClipMonster's folder on this PC), removed, cleaned up or rejected aren't
+  downloaded, and only clips uploaded in the last 14 days are taken (changeable).
+- Each clip taken is marked in Drive with the PC's name, so TikTok Manager on a second PC leaves it
+  alone and nothing is posted twice.
+- The Ready page's **☁ Google Drive** line shows the last look, or what's stopping it.
+
+Step by step: [docs/google-drive.md](docs/google-drive.md).
+
 ## Posting from your phone
 
 **Settings → Ready to upload → Phone folder** (or the 📱 line on the Ready page, one click with

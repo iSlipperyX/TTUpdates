@@ -92,6 +92,34 @@ def ai_key(provider: str = "claude") -> str:
     return key if key.startswith("sk-") else ""
 
 
+def _settings() -> dict:
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def drive_client() -> tuple[str, str]:
+    """The Google OAuth client (ID, secret) ClipMonster 2.8+ on this PC uploads to Google Drive with,
+    so TikTok Manager can sign in to the same Drive and see the clips it uploaded (drive_sync.py)."""
+    data = _settings()
+    cid, secret = data.get("gdrive_client_id"), data.get("gdrive_client_secret")
+    cid = cid.strip() if isinstance(cid, str) else ""
+    secret = secret.strip() if isinstance(secret, str) else ""
+    return (cid, secret) if cid.endswith(".apps.googleusercontent.com") and secret else ("", "")
+
+
+def drive_folder() -> str:
+    """The folder in Drive ClipMonster on this PC uploads to ("" when it isn't set up here)."""
+    name = _settings().get("gdrive_folder")
+    return name.strip().strip("/\\") if isinstance(name, str) else ""
+
+
+def uploads_to_drive() -> bool:
+    return _settings().get("upload_target") == "gdrive"
+
+
 def output_folders() -> list[Path]:
     """Where ClipMonster on this PC puts its clips (Automation's folder first), read from its settings."""
     try:
