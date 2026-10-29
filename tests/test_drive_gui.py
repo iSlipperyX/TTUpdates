@@ -10,7 +10,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from fake_google import FakeGoogle  # noqa: E402
 from test_drive import browser_that_allows, clipmonster_drive  # noqa: E402
-from test_main_window import app, wait_for, window  # noqa: E402,F401,F811 (pytest fixtures)
+import test_main_window  # noqa: E402
+from test_main_window import wait_for  # noqa: E402
+
+app, window = test_main_window.app, test_main_window.window  # its fixtures
 
 
 @pytest.fixture(autouse=True)
