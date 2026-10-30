@@ -107,6 +107,13 @@ class Settings:
     cleanup_folder: str = ""  # "" = Documents\TikTok Manager\Posted videos
     cleanup_days: int = 0  # only videos posted at least this many days ago (0 = any)
     cleanup_trash: bool = False  # to the Recycle Bin rather than deleted for good
+    # Google Drive (drive_sync.py): clips ClipMonster uploaded there are downloaded and come in like a watched folder
+    drive_on: bool = False
+    drive_client_id: str = ""  # "" = ClipMonster's on this PC (it must be from the same Google Cloud project)
+    drive_client_secret: str = ""
+    drive_folder: str = ""  # the folder in Drive ClipMonster uploads to; "" = ClipMonster's setting, else "ClipMonster"
+    drive_inbox: str = ""  # where clips are downloaded to; "" = Videos\TikTok Manager\From Google Drive
+    drive_days: int = 14  # only clips uploaded in the last this many days (0 = all)
     # Live view (live.py): logged-in accounts' profile pages are read this often (seconds), in the background
     live_interval: int = 300
     live_show_browser: bool = False  # show the window while reading (if TikTok keeps asking for a captcha)
@@ -154,4 +161,4 @@ class Settings:
         safefile.save(self.path(), data)
 
 
-SECRET_FIELDS = ("ai_api_key", "gemini_api_key")
+SECRET_FIELDS = ("ai_api_key", "gemini_api_key", "drive_client_secret")

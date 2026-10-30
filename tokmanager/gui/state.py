@@ -12,7 +12,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .. import jobs as work
-from .. import niches
+from .. import niches, ready
 from ..accounts import Account, Accounts
 from ..config import Settings, app_dir
 from ..store import Store, VideoItem
@@ -92,6 +92,8 @@ class AppState(QObject):
         # The last update of the phone folder (phone.sync) and why the last try failed, if it did
         self.phone_result = None
         self.phone_error = ""
+        # The last look at Google Drive (drive_sync.Result), for the Ready page and Settings
+        self.drive_result = None
         if self.store.adopt(self.accounts.ids(), self.accounts.items[0].id):
             self.store.save()
         for a in self.accounts:  # e.g. the account made from a 1.0 install: its @name was in the stats
@@ -104,6 +106,9 @@ class AppState(QObject):
         # One browser/TikTok action at a time: they share a browser profile and a login.
         self.tiktok_pool = QThreadPool(self)
         self.tiktok_pool.setMaxThreadCount(1)
+        # Google Drive downloads (drive_sync.py) can take minutes: a thread of their own, so scoring never waits.
+        self.drive_pool = QThreadPool(self)
+        self.drive_pool.setMaxThreadCount(1)
         self.jobs: list[Job] = []
         # The niche index (niches()), and whether something it's made from changed since
         self._niche_index: niches.Index | None = None
@@ -142,12 +147,13 @@ class AppState(QObject):
             return self._niche_index
         cm = niches.clipmonster_info()
         with self.store.lock:
-            sig = (cm.stamp, tuple(self.settings.watch_folders), tuple((a.id, a.username) for a in self.accounts),
+            roots = ready.watch_roots(self.settings)
+            sig = (cm.stamp, tuple(roots), tuple((a.id, a.username) for a in self.accounts),
                    tuple((i.id, i.path, i.niche, i.niche_id, i.niche_set, i.account, i.source_channel)
                          for i in self.store.items.values()))
             if self._niche_index is None or self._niche_sig != sig:
                 self._niche_index = niches.Index(self.store.items.values(), self.accounts,
-                                                 self.settings.watch_folders, cm)
+                                                 roots, cm)
                 self._niche_sig = sig
         self._niche_dirty, self._niche_checked = False, now
         return self._niche_index
@@ -280,7 +286,7 @@ class AppState(QObject):
         job.signals.done.connect(lambda: self._finished(job))
         self.jobs.append(job)
         self.jobs_changed.emit()
-        (self.tiktok_pool if pool == "tiktok" else self.analysis_pool).start(job)
+        {"tiktok": self.tiktok_pool, "drive": self.drive_pool}.get(pool, self.analysis_pool).start(job)
         return job
 
     def _finished(self, job: Job) -> None:
@@ -298,6 +304,6 @@ class AppState(QObject):
                 continue
             j.cancel()
             # Jobs still waiting for a thread never run, so drop them here.
-            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j):
+            if self.analysis_pool.tryTake(j) or self.tiktok_pool.tryTake(j) or self.drive_pool.tryTake(j):
                 self.jobs.remove(j)
         self.jobs_changed.emit()
