@@ -265,7 +265,7 @@ class AppState(QObject):
         self.account_changed.emit()
 
     def replan(self) -> None:
-        work.replan(self.store, self.accounts, self.settings)
+        work.replan(self.store, self.accounts, self.settings, index=self.niches())
 
     def account_busy(self, account_id: str, kinds: tuple[str, ...] = ("post", "login", "account")) -> bool:
         return any(j.account_id == account_id and j.kind in kinds for j in self.jobs)

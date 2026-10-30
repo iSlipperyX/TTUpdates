@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import schedule, scoring
+from . import niches, schedule, scoring
 from .accounts import Account, Accounts
 from .config import Settings, thumbs_dir
 from .media import analyze, probe, thumbnail
@@ -218,12 +218,24 @@ def refresh_account(store: Store, s: Settings, account: Account, log: Log, cance
 # --- scheduling across accounts ------------------------------------------------------
 
 
-def replan(store: Store, accounts: Accounts | list[Account], s: Settings, now: float | None = None) -> None:
-    """Work out every queued video's post time, using its own account's schedule and last post."""
+def replan(store: Store, accounts: Accounts | list[Account], s: Settings, now: float | None = None,
+           index: niches.Index | None = None) -> None:
+    """Work out every queued video's post time, using its own account's schedule and last post.
+
+    Only videos in the niches the account posts (Account.post_niches) get one; the others wait in the
+    queue with none, so they're never posted, reminded of or copied to the phone. `index`: the niches
+    the window already worked out (else they're worked out here)."""
     now = time.time() if now is None else now
+    accounts = list(accounts)
+    if index is None:
+        from .ready import watch_roots
+
+        with store.lock:
+            index = niches.build(list(store.items.values()), accounts, watch_roots(s))
     for a in accounts:
         q = store.queue(a.id)
-        planned = schedule.plan([i for i in q if i.status == "queued"], a.apply(s), now, store.last_post_time(a.id))
+        go = [i for i in q if i.status == "queued" and index.schedules(i, a.post_niches)]
+        planned = schedule.plan(go, a.apply(s), now, store.last_post_time(a.id))
         with store.lock:
             for it in q:
                 it.planned_at = planned.get(it.id)

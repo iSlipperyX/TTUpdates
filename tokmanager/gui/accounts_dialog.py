@@ -25,7 +25,8 @@ def account_status(state: AppState, a: Account) -> str:
     parts = [methods.short_status(state.settings, a)]
     q = [i for i in state.store.queue(a.id) if i.status == "queued"]
     failed = sum(1 for i in state.store.queue(a.id) if i.status == "failed")
-    parts.append(f"{len(q)} queued" + (f", {failed} failed" if failed else ""))
+    held = sum(1 for i in q if not i.planned_at)  # not in the niches it posts (jobs.replan)
+    parts.append(f"{len(q)} queued" + (f", {held} on hold" if held else "") + (f", {failed} failed" if failed else ""))
     nxt = min((i.planned_at for i in q if i.planned_at), default=None)
     parts.append(("autopilot" if a.autopilot else "by hand") + (f", next {schedule.fmt_when(nxt)}" if nxt else ""))
     return " · ".join(parts)

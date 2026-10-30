@@ -16,7 +16,7 @@ from ..accounts import POSTING_MODES
 from ..scoring import grade
 from ..store import VideoItem
 from ..tiktok import methods
-from . import theme
+from . import niche_menu, theme
 from .editor import PostEditor
 from .state import AppState
 from .widgets import Segmented, badge_for, fmt_dur, label, panel, thumb_pixmap
@@ -69,10 +69,13 @@ class QueueDelegate(QStyledItemDelegate):
         f.setPointSizeF(9)
         p.setFont(f)
         now = time.time()
+        waits = self.page.waits(item)
         if item.status == "uploading":
             line, col = "⏫ Posting now…", theme.WARN
         elif item.status == "failed":
             line, col = f"✖ Failed: {item.last_error or 'unknown error'}", theme.BAD
+        elif waits:
+            line, col = "⏸ " + waits, theme.WARN
         else:
             when = schedule.fmt_when(item.planned_at, now)
             pin = "📌 " if item.pinned_at else "🕑 "
@@ -245,6 +248,25 @@ class QueuePage(QWidget):
         self.next_label.setTextFormat(Qt.RichText)
         self.next_label.linkActivated.connect(lambda _href: self.ready_requested.emit())
         sl.addWidget(self.next_label)
+        # The niches the schedule takes (niches.py): only there once the library has niches
+        self.niche_row = QWidget()
+        nl = QVBoxLayout(self.niche_row)
+        nl.setContentsMargins(0, 4, 0, 0)
+        nl.setSpacing(4)
+        row = QHBoxLayout()
+        row.addWidget(label("Niches it posts"))
+        self.niche_pick = QPushButton()
+        self.niche_pick.setToolTip("Only queued videos tagged with these niches get a posting time")
+        self.niche_pick_menu = QMenu(self.niche_pick)
+        self.niche_pick_menu.aboutToShow.connect(self._fill_niche_pick)
+        self.niche_pick.setMenu(self.niche_pick_menu)
+        row.addWidget(self.niche_pick, 1)
+        nl.addLayout(row)
+        self.niche_note = label("", "muted", wrap=True)
+        self.niche_note.setTextFormat(Qt.RichText)
+        self.niche_note.linkActivated.connect(self._select_waiting)
+        nl.addWidget(self.niche_note)
+        sl.addWidget(self.niche_row)
         for w in (self.per_day, self.gap):
             w.valueChanged.connect(self._schedule_changed)
         for w in (self.first, self.last):
@@ -359,8 +381,12 @@ class QueuePage(QWidget):
             txt += f" · runs until {schedule.fmt_when(queued[-1].planned_at)}" + (f" ({days:.0f} days)" if days >= 2 else "")
         if failed:
             txt += f" · {failed} failed"
+        waiting = sum(1 for i in q if self.waits(i))
+        if waiting:
+            txt += f" · {waiting} on hold: not in its niches"
         self.summary.setText(txt)
         self._update_next()
+        self._update_niches()
         self._selection_changed()
 
     def _update_next(self) -> None:
@@ -385,6 +411,101 @@ class QueuePage(QWidget):
             nxt = q[0]
             self.next_label.setText(f"<span style='color:{theme.GOOD}'>● On.</span> Next: <b>{_esc(nxt.headline)}</b> "
                                     f"at {schedule.fmt_when(nxt.planned_at)} via your browser login.")
+
+    # --- the niches it posts ---------------------------------------------------------
+
+    def waits(self, item: VideoItem) -> str:
+        """Why a queued video has no posting time ("" when it has one, or isn't waiting to post)."""
+        if item.status != "queued" or item.planned_at:
+            return ""
+        a = self.state.accounts.get(item.account) or self.state.active
+        index = self.state.niches()
+        why = index.waits(item, a.post_niches)
+        if why == "none":
+            return "No posting time: it has no niche. Right-click → Niche to tag it."
+        if why == "other":
+            name = index.name_of(item)
+            others = [b.label for b in index.accounts_for(index.of(item), self.state.accounts) if b.id != a.id]
+            where = f" Move it to {others[0]} (right-click)." if others else ""
+            return f"No posting time: {a.label} doesn't post {name}.{where}"
+        return ""
+
+    def _waiting(self) -> list[VideoItem]:
+        q = self.state.in_niche(self.state.store.queue(self.state.active.id))
+        return [i for i in q if self.waits(i)]
+
+    def _update_niches(self) -> None:
+        """The Niches it posts button and what it means for the queue now."""
+        index = self.state.niches()
+        a = self.state.active
+        self.niche_row.setVisible(bool(index.niches))
+        if not index.niches:
+            return
+        self.niche_pick.setText(index.describe(a.post_niches))
+        waiting = self._waiting()
+        none = sum(1 for i in waiting if index.waits(i, a.post_niches) == "none")
+        other = len(waiting) - none
+        if niches.NONE in a.post_niches and niches.EVERY in a.post_niches:
+            note = "Every queued video gets a posting time, with a niche or without."
+        else:
+            note = "Only queued videos tagged with " + ("a niche" if niches.EVERY in a.post_niches else "these niches") + \
+                   " get a posting time."
+        if waiting:
+            parts = ([f"{none} with no niche"] if none else []) + ([f"{other} from other niches"] if other else [])
+            note += (f" <span style='color:{theme.WARN}'>{' and '.join(parts)} wait{'s' if len(waiting) == 1 else ''}"
+                     f" in the queue.</span> <a href='select' style='color:{theme.ACCENT_2}'>Select "
+                     f"{'it' if len(waiting) == 1 else 'them'}</a>")
+        self.niche_note.setText(note)
+
+    def _fill_niche_pick(self) -> None:
+        m = self.niche_pick_menu
+        m.clear()
+        index = self.state.niches()
+        a = self.state.active
+        counts = index.counts(i for i in self.state.store.queue(a.id) if i.status == "queued")
+        wants = a.post_niches
+
+        def add(key: str, text: str, on: bool) -> None:
+            act = m.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(on)
+            # The last one ticked stays ticked: an account that posts nothing would never post.
+            act.setEnabled(not (on and wants == [key]))
+            act.toggled.connect(lambda checked, k=key: self.set_post_niche(k, checked))
+
+        add(niches.EVERY, "Every niche", niches.EVERY in wants)
+        m.addSeparator()
+        for n in index.niches:
+            got = counts.get(n.key, 0)
+            add(n.key, n.label + (f"  ({got} queued)" if got else ""), n.key in wants and niches.EVERY not in wants)
+        m.addSeparator()
+        got = counts.get(niches.NONE, 0)
+        add(niches.NONE, "Videos with no niche" + (f"  ({got} queued)" if got else ""), niches.NONE in wants)
+
+    def set_post_niche(self, key: str, on: bool) -> None:
+        """Tick or untick a niche the shown account's schedule takes."""
+        a = self.state.active
+        wants = niches.post_niches(a.post_niches, key, on)
+        if not wants or wants == a.post_niches:
+            return
+        a.post_niches = wants
+        self.state.save_accounts()
+        self.state.log(f"{a.label} now posts: {self.state.niches().describe(wants)}.")
+        self.state.account_changed.emit()
+        self.refresh()
+
+    def _select_waiting(self, _href: str = "") -> None:
+        ids = {i.id for i in self._waiting()}
+        self.list.clearSelection()
+        first = None
+        for r in range(self.list.count()):
+            li = self.list.item(r)
+            if li.data(ID_ROLE) in ids:
+                li.setSelected(True)
+                first = first or li
+        if first:
+            self.list.scrollToItem(first)
+        self.list.setFocus()
 
     def selected_ids(self) -> list[str]:
         return [li.data(ID_ROLE) for li in sorted(self.list.selectedItems(), key=self.list.row)]
@@ -531,6 +652,8 @@ class QueuePage(QWidget):
         m = QMenu(self)
         m.addAction("Post now", self.post_now).setEnabled(self.post_btn.isEnabled())
         m.addAction("Remove from queue", self.remove).setEnabled(self.remove_btn.isEnabled())
+        items = [it for it in (self.state.store.get(i) for i in ids) if it]
+        niche_menu.fill(m.addMenu("Niche"), self.state, items, self)
         if others:
             move = m.addMenu("Move to another account's queue")
             for a in others:

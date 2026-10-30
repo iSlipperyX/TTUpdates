@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import clipmonster, schedule
+from . import clipmonster, niches, schedule
 from .accounts import Account, Accounts
 from .config import Settings
 from .store import Store, VideoItem
@@ -178,17 +178,24 @@ def niche_account(accounts: Accounts | list[Account], item: VideoItem) -> Accoun
     return next((a for a in accounts if a.username and a.username.strip().lstrip("@").lower() == want), None)
 
 
-def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoItem], target: str) -> dict[str, int]:
+def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoItem], target: str,
+           index: niches.Index | None = None) -> dict[str, int]:
     """Queue freshly imported videos.
 
     A clip ClipMonster made for a niche goes to the account that niche names, whatever
-    Settings.watch_target says. The rest go as watch_target says: "library" leaves them unqueued,
-    "spread" gives each to the account with the fewest videos waiting, an account id queues them
-    all for that account. Returns how many each account got."""
+    Settings.watch_target says, and a clip in a niche that only one account posts (picked by name in
+    its niches, Account.post_niches) goes to that one. The rest go as watch_target says: "library"
+    leaves them unqueued, "spread" gives each to the account with the fewest videos waiting, an
+    account id queues them all for that account. Returns how many each account got.
+
+    `index`: the library's niches, new clips included (worked out here when not given)."""
     accounts = list(accounts)
     got: dict[str, int] = {}
     if not items or not accounts:
         return got
+    if index is None:
+        with store.lock:
+            index = niches.build(list(store.items.values()), accounts)
     fixed = next((a for a in accounts if a.id == target), None)
     waiting = {a.id: sum(1 for i in store.queue(a.id) if i.status == "queued") for a in accounts}
     # The parts of a series all go to the account part 1 went to, also when they come in later.
@@ -199,6 +206,9 @@ def assign(store: Store, accounts: Accounts | list[Account], items: list[VideoIt
                                      if i.series and i.account in ids and i.id not in new}
     for it in series_order(items):
         owner = niche_account(accounts, it)
+        posts_it = index.accounts_for(index.of(it), accounts)
+        if owner is None and len(posts_it) == 1:
+            owner = posts_it[0]
         if owner is not None:
             aid = owner.id
         elif fixed is not None:
@@ -319,13 +329,17 @@ def summary_due(s: Settings, accounts: Accounts | list[Account], now: float | No
 
 
 def summary(store: Store, accounts: Accounts | list[Account], now: float | None = None) -> str:
-    """'4 ready for @cats (next 12:00) · 2 for @dogs', or "" when nothing is waiting."""
+    """'4 ready for @cats (next 12:00) · 2 for @dogs', or "" when nothing is waiting. Videos that have
+    no posting time because they're not in a niche the account posts (jobs.replan) are counted apart."""
     now = time.time() if now is None else now
     parts = []
     for a in accounts:
         q = [i for i in ready(store, a.id) if i.status == "queued"]
+        timed = [i for i in q if i.planned_at]
+        waiting = len(q) - len(timed)
         if not q:
             continue
-        nxt = min((i.planned_at for i in q if i.planned_at), default=None)
-        parts.append(f"{len(q)} for {a.handle}" + (f" (next {schedule.fmt_when(nxt, now)})" if nxt else ""))
+        nxt = min((i.planned_at for i in timed), default=None)
+        text = f"{len(timed)} for {a.handle}" + (f" (next {schedule.fmt_when(nxt, now)})" if nxt else "")
+        parts.append(text + (f", {waiting} on hold (not in its niches)" if waiting else ""))
     return " · ".join(parts)

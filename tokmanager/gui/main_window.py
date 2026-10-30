@@ -414,6 +414,7 @@ class MainWindow(QMainWindow):
         if day:
             s.last_summary_day = day
             st.save_settings()
+            st.replan()  # who has a posting time, and who's waiting for a niche
             text = ready.summary(st.store, st.accounts)
             if text:
                 self._log(f"Ready to post today: {text}.")
@@ -443,7 +444,8 @@ class MainWindow(QMainWindow):
                     self._log("No new clips in your watched folders.")
                 st.library_changed.emit()  # the Ready page shows the counts
                 return
-            got = ready.assign(st.store, st.accounts, items, s.watch_target)
+            st._niches_changed()  # the new clips' niches decide which account they go to
+            got = ready.assign(st.store, st.accounts, items, s.watch_target, index=st.niches())
             st.save_soon()
             st.library_changed.emit()
             where = ", ".join(f"{n} for {st.accounts.label_for(aid)}" for aid, n in got.items())

@@ -15,8 +15,14 @@ say, so a video's niche is worked out, the first of these that gives one:
 7. ClipMonster found its video on the YouTube charts and only one niche takes chart videos (clips
    from before ClipMonster had niches, when the charts were where its videos came from).
 
-Otherwise it has no niche. Picking a niche only changes what the pages show: every queued video
-still posts at its time.
+Otherwise it has no niche. Picking a niche at the top of the window only changes what the pages
+show.
+
+What does change posting is the niches each account posts (Account.post_niches, picked on the Queue
+page): only queued videos tagged with one of them get a posting time (schedules()). The rest stay in
+the queue, in their place, and wait: a video with no niche until you tag it, a video from another
+niche until you move it to an account that posts it. Out of the box an account posts every niche,
+so it's just the videos with no niche that wait.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from .store import VideoItem
 
 ALL = ""  # the filter that shows every video
 NONE = "-"  # videos with no niche (as a filter, and as VideoItem.niche_set: "you said it has none")
+EVERY = "*"  # in Account.post_niches: whatever niche a video is in (NONE there: videos with no niche too)
 
 # Why a video is in its niche (Index.why), shown in the Library's tooltip and details
 WHY = {
@@ -327,6 +334,42 @@ class Index:
     def valid(self, want: str) -> bool:
         return want in (ALL, NONE) or want in self._by_key
 
+    # --- what an account's schedule takes ---------------------------------------------------
+
+    def schedules(self, it: VideoItem, post_niches: Iterable[str]) -> bool:
+        """Does an account that posts `post_niches` (Account.post_niches) give the video a posting time?
+
+        Only videos tagged with one of its niches; videos with no niche only when NONE is in the list.
+        A library with no niches at all has nothing to tag videos with, so there every video goes."""
+        return not self.waits(it, post_niches)
+
+    def waits(self, it: VideoItem, post_niches: Iterable[str]) -> str:
+        """Why the video gets no posting time on such an account: "none" (it has no niche), "other"
+        (its niche isn't one the account posts) or "" (it gets one)."""
+        if not self.niches:
+            return ""
+        wants = set(post_niches)
+        key = self.of(it)
+        if key in ("", NONE):
+            return "" if NONE in wants else "none"
+        return "" if EVERY in wants or key in wants else "other"
+
+    def accounts_for(self, key: str, accounts: Iterable) -> list:
+        """The accounts that post niche `key` by name (picked it in their list, not just "every niche")."""
+        return [a for a in accounts if key and key in getattr(a, "post_niches", ())]
+
+    def describe(self, post_niches: Iterable[str]) -> str:
+        """'Every niche', 'Gaming and Finance', 'Gaming, and videos with no niche', 'Every video'…"""
+        wants = list(post_niches)
+        none = NONE in wants
+        if EVERY in wants:
+            return "Every video" if none else "Every niche"
+        names = [self.name(k) for k in wants if k in self._by_key]
+        if not names:
+            return "Only videos with no niche" if none else "Nothing"
+        text = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+        return text + (", and videos with no niche" if none else "")
+
 
 def _path(text: str) -> Path:
     """A path from the library, which may have been saved on Windows (backslashes)."""
@@ -353,6 +396,19 @@ def set_niche(items: Iterable[VideoItem], name: str) -> int:
             it.niche_set = name
             n += 1
     return n
+
+
+def post_niches(wants: Iterable[str], key: str, on: bool) -> list[str]:
+    """An account's niche list (Account.post_niches) with niche `key` (or EVERY, or NONE) ticked or
+    unticked. Ticking a niche by name stops "every niche"; ticking "every niche" drops the names."""
+    wants = [k for k in wants if k != key]
+    if on:
+        if key == EVERY:
+            wants = [k for k in wants if k == NONE]
+        elif key != NONE:
+            wants = [k for k in wants if k != EVERY]
+        wants.append(key)
+    return ([EVERY] if EVERY in wants else []) + [k for k in wants if k != EVERY]
 
 
 def merge_order(order: list[str], shown: list[str]) -> list[str]:

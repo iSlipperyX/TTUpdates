@@ -101,6 +101,14 @@ class ReadyCard(QFrame):
             else:
                 facts.append(f"<span style='color:{theme.ACCENT_2}'>🕑 Post {schedule.fmt_when(item.planned_at, now)}"
                              "</span>")
+        elif item.status == "queued" and account is not None:
+            why = st.niches().waits(item, account.post_niches)
+            if why == "none":
+                facts.append(f"<span style='color:{theme.WARN}'>⏸ No posting time: it has no niche. Tag it in the "
+                             "Library (right-click → Niche)</span>")
+            elif why == "other":
+                facts.append(f"<span style='color:{theme.WARN}'>⏸ No posting time: {_esc(account.label)} doesn't post "
+                             f"{_esc(st.niches().name_of(item))}</span>")
         if item.duration:
             facts.append(fmt_dur(item.duration))
         if item.source_rating:
@@ -385,16 +393,21 @@ class ReadyPage(QWidget):
         items = st.in_niche(every)
         niche = st.niche_label()
         hidden = len(every) - len(items)  # waiting, but in another niche
+        # Videos outside the niches the account posts have no posting time (jobs.replan): they go last
+        held = {i.id for i in items if i.status == "queued" and not i.planned_at}
+        items = [i for i in items if i.id not in held] + [i for i in items if i.id in held]
         multi = len(st.accounts) > 1
         self.badge.setVisible(multi)
         self.badge.setPixmap(badge_for(a, 24))
-        queued = [i for i in items if i.status == "queued"]
+        queued = [i for i in items if i.status == "queued" and i.id not in held]
         today = dt.datetime.combine(dt.date.today(), dt.time.min).timestamp()
         done = len(st.in_niche([i for i in st.store.posted(a.id) if (i.posted_at or 0) >= today]))
+        failed = len(items) - len(queued) - len(held)
         text = f"{len(queued)} video{'s' * (len(queued) != 1)} ready to post" if queued else \
-            f"{len(items)} failed video{'s' * (len(items) != 1)} to look at" if items else \
+            f"{failed} failed video{'s' * (failed != 1)} to look at" if failed else \
             "All done for now" if done else "Nothing waiting"
         self.summary.setText((f"{a.label}: " if multi else "") + (f"{niche}: " if niche else "") + text +
+                             (f" · {len(held)} on hold: not in its niches" if held else "") +
                              (f" · {done} posted today ✓" if done else "") +
                              (f" · {hidden} more in other niches" if hidden else ""))
         folders = ready.watch_roots(st.settings)
@@ -425,7 +438,7 @@ class ReadyPage(QWidget):
         self.all_tags_btn.setVisible(len(untagged) > 1 and ai.has_key(st.settings))
         sig = [(i.id, i.status, i.caption, i.hashtags, i.planned_at, i.total, i.thumb, i.last_error,
                 i.id in self.tagging, i.id in self.on_phone, i.id in self.gone, index.name_of(i)) for i in items]
-        sig.append((a.id, a.default_hashtags, st.settings.caption_template, st.niche_filter))
+        sig.append((a.id, a.default_hashtags, st.settings.caption_template, st.niche_filter, tuple(a.post_niches)))
         ids = [i.id for i in items[:MAX_CARDS]]
         if a.id != self._current_account:
             self._current_account, self.current, self._current_pos = a.id, "", 0
