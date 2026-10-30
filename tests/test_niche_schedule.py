@@ -102,7 +102,7 @@ def queued(tmp_path, *specs):
     for it, (title, niche) in zip(items, specs):
         it.title, it.niche_set = title, niche
     a = Account(id="A", username="iclipx2", posts_per_day=3, first_post_time="09:00", last_post_time="21:00",
-                min_gap_minutes=60, autopilot=True, logged_in=True)
+                min_gap_minutes=60, vary_minutes=0, autopilot=True, logged_in=True)  # exact times
     store.enqueue([i.id for i in items], a.id)
     return store, a, items
 

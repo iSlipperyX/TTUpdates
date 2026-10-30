@@ -244,9 +244,9 @@ def test_stats_and_post_links_stay_with_their_account(tmp_path):
 
 def make_accounts(**overrides) -> tuple[Account, Account]:
     a = Account(id="A", username="aaa", posts_per_day=2, first_post_time="10:00", last_post_time="18:00",
-                min_gap_minutes=60, autopilot=True, logged_in=True)
+                min_gap_minutes=60, vary_minutes=0, autopilot=True, logged_in=True)
     b = Account(id="B", username="bbb", posts_per_day=1, first_post_time="12:00", last_post_time="12:00",
-                min_gap_minutes=60, autopilot=True, logged_in=True)
+                min_gap_minutes=60, vary_minutes=0, autopilot=True, logged_in=True)
     for k, v in overrides.items():
         acc, field = k.split("_", 1)
         setattr(a if acc == "a" else b, field, v)
@@ -324,3 +324,28 @@ def test_next_post_per_account(tmp_path):
     jobs.replan(st, [a, b], Settings(), now=ts(2026, 10, 20, 9))
     assert jobs.next_post(st, "A") is a1 and jobs.next_post(st, "B") is b1
     assert jobs.next_post(st) is a1
+
+
+def test_each_account_varies_its_own_times_and_old_account_lists_get_the_new_fields(tmp_path):
+    from tokmanager import safefile
+
+    path = tmp_path / "accounts.json"
+    # A list saved before vary_minutes / warm_up_start existed keeps its own schedule.
+    safefile.save(path, {"version": 1, "active": "old", "accounts": [
+        {"id": "old", "username": "iclip", "posts_per_day": 9, "first_post_time": "09:00",
+         "last_post_time": "21:00", "min_gap_minutes": 120}]})
+    accs = Accounts.load(Settings(), path)
+    a = accs.get("old")
+    assert (a.posts_per_day, a.min_gap_minutes, a.vary_minutes, a.warm_up_start) == (9, 120, 15, 0.0)
+    assert a.apply(Settings()).schedule_seed == "old"
+    b = accs.add("New", copy_schedule_from=a)
+    assert b.apply(Settings()).schedule_seed == b.id != "old"
+    assert (b.vary_minutes, b.warm_up_start) == (15, 0.0)  # warm-up is per account, never copied
+
+
+def test_warm_up_counts_from_when_a_recent_account_was_added():
+    a = Account(created_at=1_000_000.0)
+    a.start_warm_up(now=1_000_000.0 + 3 * 86400)
+    assert a.warm_up_start == 1_000_000.0
+    a.start_warm_up(now=1_000_000.0 + 30 * 86400)  # added long ago: starts today
+    assert a.warm_up_start == 1_000_000.0 + 30 * 86400

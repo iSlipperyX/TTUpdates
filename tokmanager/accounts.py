@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import safefile
 from .config import Settings, app_dir, cache_dir
+from .schedule import WARM_UP_DAYS
 
 LEGACY_BROWSER_PROFILE = "browser-profile"
 LEGACY_TOKENS = "tiktok_tokens.json"
@@ -31,6 +32,9 @@ PER_ACCOUNT = {
     "first_post_time": "first_post_time",
     "last_post_time": "last_post_time",
     "min_gap_minutes": "min_gap_minutes",
+    "vary_minutes": "vary_minutes",
+    "warm_up_start": "warm_up_start",
+    "id": "schedule_seed",
     "autopilot": "autopilot",
     "logged_in": "browser_logged_in",
     "default_privacy": "default_privacy",
@@ -60,10 +64,12 @@ class Account:
     live: bool = True  # watch it live (live.py, the Live page) while it's logged in
     # Schedule
     autopilot: bool = False
-    posts_per_day: int = 3
-    first_post_time: str = "09:00"
+    posts_per_day: int = 2
+    first_post_time: str = "11:00"
     last_post_time: str = "21:00"
-    min_gap_minutes: int = 120
+    min_gap_minutes: int = 180
+    vary_minutes: int = 15  # each post time moves by up to this much, differently each day
+    warm_up_start: float = 0.0  # set when the account is marked new: it posts less for two weeks
     # Posting defaults
     default_privacy: str = "public"
     default_hashtags: str = "#fyp"
@@ -115,6 +121,13 @@ class Account:
         """The browser profile folder and the API tokens file an older version may have left (not created)."""
         return cache_dir() / self.browser_profile, app_dir() / self.tokens_file
 
+    def start_warm_up(self, now: float | None = None) -> None:
+        """Mark the account as new on TikTok: it posts less for two weeks (schedule.WARM_UP), counted
+        from when it was added here if that's recent enough, else from now."""
+        now = time.time() if now is None else now
+        recent = now - self.created_at < WARM_UP_DAYS * 86400
+        self.warm_up_start = self.created_at if recent else now
+
     def apply(self, s: Settings) -> Settings:
         """A copy of the app settings with this account's schedule and posting defaults."""
         return replace(s, **{target: getattr(self, src) for src, target in PER_ACCOUNT.items()})
@@ -151,7 +164,7 @@ class Accounts:
     @staticmethod
     def _from_settings(s: Settings) -> Account:
         """The first account, made from a 1.0 install's settings and login (or fresh defaults)."""
-        a = Account(**{src: getattr(s, target) for src, target in PER_ACCOUNT.items()})
+        a = Account(**{src: getattr(s, target) for src, target in PER_ACCOUNT.items() if src != "id"})
         if (cache_dir() / LEGACY_BROWSER_PROFILE).is_dir():
             a.browser_profile = LEGACY_BROWSER_PROFILE
         if (app_dir() / LEGACY_TOKENS).is_file():
@@ -197,7 +210,8 @@ class Accounts:
         but autopilot starts off so nothing posts before you've logged in and looked at its queue."""
         a = Account(name=name.strip())
         if copy_schedule_from:
-            for f in ("posts_per_day", "first_post_time", "last_post_time", "min_gap_minutes", "default_privacy"):
+            for f in ("posts_per_day", "first_post_time", "last_post_time", "min_gap_minutes", "vary_minutes",
+                      "default_privacy"):
                 setattr(a, f, getattr(copy_schedule_from, f))
         self.items.append(a)
         return a
