@@ -34,7 +34,8 @@ def test_daily_slots_spread_evenly():
 
 
 def test_plan_fills_slots_in_queue_order_and_rolls_to_next_day():
-    s = Settings(posts_per_day=2, first_post_time="10:00", last_post_time="18:00", min_gap_minutes=60)
+    s = Settings(posts_per_day=2, first_post_time="10:00", last_post_time="18:00", min_gap_minutes=60,
+                 vary_minutes=0)
     q = [item("a"), item("b"), item("c")]
     plan = schedule.plan(q, s, now=ts(2026, 10, 20, 12), last_post=None)
     assert plan[q[0].id] == ts(2026, 10, 20, 18)
@@ -43,7 +44,8 @@ def test_plan_fills_slots_in_queue_order_and_rolls_to_next_day():
 
 
 def test_plan_respects_gap_after_last_post_and_pins():
-    s = Settings(posts_per_day=4, first_post_time="08:00", last_post_time="20:00", min_gap_minutes=180)
+    s = Settings(posts_per_day=4, first_post_time="08:00", last_post_time="20:00", min_gap_minutes=180,
+                 vary_minutes=0)
     pinned = item("pinned", pinned_at=ts(2026, 10, 20, 16))
     q = [item("a"), pinned, item("b")]
     # Last post at 9:30 -> nothing before 12:30; slots are 8, 12, 16, 20.
@@ -59,6 +61,96 @@ def test_due_picks_first_ready_queued_item():
     b.status = "failed"
     assert schedule.due([a, b], now=150) is None
     assert schedule.due([a, b], now=250) is a
+
+
+def hm(times):
+    return [t.strftime("%H:%M") for t in times]
+
+
+def test_slots_that_dont_fit_the_gap_are_spread_out_not_dropped():
+    # 9 a day from 09:00 to 21:00 at least 2 h apart: only 7 fit, every 2 hours (it used to plan 5).
+    s = Settings(posts_per_day=9, first_post_time="09:00", last_post_time="21:00", min_gap_minutes=120,
+                 vary_minutes=0)
+    assert schedule.fitting(s) == 7
+    assert hm(schedule.daily_slots(s)) == ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00", "21:00"]
+    plan = schedule.plan([item(str(n)) for n in range(7)], s, now=ts(2026, 10, 20, 0), last_post=None)
+    assert sorted(plan.values()) == [ts(2026, 10, 20, h) for h in (9, 11, 13, 15, 17, 19, 21)]
+    assert "Only 7 of 9 fit" in schedule.describe(s, dt.date(2026, 10, 20))[0]
+    s.min_gap_minutes = 0
+    assert schedule.fitting(s) == 9
+
+
+def test_the_new_defaults_are_two_a_day_three_hours_or_more_apart():
+    s = Settings(vary_minutes=0)
+    assert (s.posts_per_day, s.min_gap_minutes) == (2, 180)
+    assert hm(schedule.daily_slots(s)) == ["11:00", "21:00"]
+    assert schedule.describe(s, dt.date(2026, 10, 20)) == []
+
+
+def test_varied_times_move_a_little_each_day_and_stay_the_same_when_replanned():
+    s = Settings(posts_per_day=3, first_post_time="09:00", last_post_time="21:00", min_gap_minutes=180,
+                 vary_minutes=15, schedule_seed="acc1")
+    days = [dt.date(2026, 11, 1) + dt.timedelta(days=n) for n in range(30)]
+    seen = set()
+    for day in days:
+        times = schedule.slots_on(s, day)
+        assert times == schedule.slots_on(s, day)  # steady, so the 30 s replan doesn't move posts around
+        assert len(times) == 3
+        for when, nominal in zip(times, (9, 15, 21)):
+            assert abs((when - dt.datetime.combine(day, dt.time(nominal))).total_seconds()) <= 15 * 60
+        assert all((b - a).total_seconds() >= 180 * 60 for a, b in zip(times, times[1:]))
+        seen.add(tuple(t.time() for t in times))
+    assert len(seen) > 20  # not the same minute every day
+    other = Settings(**{**s.__dict__, "schedule_seed": "acc2"})
+    assert [schedule.slots_on(other, d) for d in days] != [schedule.slots_on(s, d) for d in days]
+    s.vary_minutes = 0
+    assert [t.time() for t in schedule.slots_on(s, days[0])] == [dt.time(9), dt.time(15), dt.time(21)]
+
+
+def test_varied_times_keep_the_gap_when_slots_are_exactly_a_gap_apart():
+    s = Settings(posts_per_day=7, first_post_time="09:00", last_post_time="21:00", min_gap_minutes=120,
+                 vary_minutes=30, schedule_seed="x")
+    for n in range(60):
+        times = schedule.slots_on(s, dt.date(2026, 11, 1) + dt.timedelta(days=n))
+        assert all((b - a).total_seconds() >= 120 * 60 for a, b in zip(times, times[1:]))
+        assert all(t.date() == times[0].date() for t in times)
+
+
+def test_a_late_window_never_spills_past_midnight():
+    s = Settings(posts_per_day=2, first_post_time="23:00", last_post_time="23:59", min_gap_minutes=30,
+                 vary_minutes=30, schedule_seed="x")
+    for n in range(30):
+        day = dt.date(2026, 11, 1) + dt.timedelta(days=n)
+        assert all(t.date() == day for t in schedule.slots_on(s, day))
+        assert schedule.slots_on(s, day)
+
+
+def test_warm_up_posts_nothing_then_one_then_two_then_the_accounts_own_number():
+    start = dt.datetime(2026, 11, 1, 19, 30).timestamp()
+    s = Settings(posts_per_day=3, first_post_time="09:00", last_post_time="21:00", min_gap_minutes=180,
+                 vary_minutes=0, warm_up_start=start)
+    counts = [len(schedule.slots_on(s, dt.date(2026, 11, 1) + dt.timedelta(days=n))) for n in range(16)]
+    assert counts == [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3]
+    assert schedule.warm_up_day(s, dt.date(2026, 11, 2)) == 2
+    assert schedule.warm_up_day(s, dt.date(2026, 11, 15)) is None
+    assert "Warm-up day 1 of 14: no posts yet" in schedule.describe(s, dt.date(2026, 11, 1))[0]
+    assert "1 a day for now" in schedule.describe(s, dt.date(2026, 11, 5))[0]
+    assert "3 a day from Sun 15 Nov" in schedule.describe(s, dt.date(2026, 11, 5))[0]
+    # The queue waits through the quiet days rather than piling up on day 4.
+    q = [item("a"), item("b"), item("c")]
+    plan = schedule.plan(q, s, now=start, last_post=None)
+    assert [dt.datetime.fromtimestamp(plan[i.id]).strftime("%d %H:%M") for i in q] == \
+        ["04 09:00", "05 09:00", "06 09:00"]
+    s.warm_up_start = 0.0
+    assert schedule.warm_up_cap(s, dt.date(2026, 11, 1)) is None
+
+
+def test_more_than_three_a_day_gets_a_warning():
+    s = Settings(posts_per_day=4, first_post_time="09:00", last_post_time="21:00", min_gap_minutes=180)
+    notes = schedule.describe(s, dt.date(2026, 11, 1))
+    assert len(notes) == 1 and "more than the 3" in notes[0]
+    s.posts_per_day = 3
+    assert schedule.describe(s, dt.date(2026, 11, 1)) == []
 
 
 def test_spread_keeps_same_source_apart():

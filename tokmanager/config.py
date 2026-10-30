@@ -84,10 +84,13 @@ class Settings:
     caption_template: str = "{caption} {hashtags}"
     default_hashtags: str = "#fyp"
     # Schedule
-    posts_per_day: int = 3
-    first_post_time: str = "09:00"
+    posts_per_day: int = 2
+    first_post_time: str = "11:00"
     last_post_time: str = "21:00"
-    min_gap_minutes: int = 120
+    min_gap_minutes: int = 180
+    vary_minutes: int = 15  # each post time moves by up to this much, differently each day (schedule.slots_on)
+    warm_up_start: float = 0.0  # when a new account began its two-week warm-up (schedule.WARM_UP); 0 = none
+    schedule_seed: str = ""  # the account's id, so its varied times differ from other accounts'
     autopilot: bool = False
     browser_logged_in: bool = False
     # Ready to upload (ready.py): clips arrive from watched folders, you post them yourself

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTime, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter
-from PySide6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDateTimeEdit, QGridLayout, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QStyle, QStyledItemDelegate, QTimeEdit, QVBoxLayout, QWidget)
 
@@ -223,6 +224,13 @@ class QueuePage(QWidget):
         for t in (self.first, self.last):
             t.setDisplayFormat("HH:mm")
         self.gap = QSpinBox(minimum=0, maximum=24 * 60, singleStep=15, suffix=" min")
+        self.vary = QSpinBox(minimum=0, maximum=30, singleStep=5, prefix="± ", suffix=" min")
+        self.vary.setToolTip("Each post time moves by up to this much, differently every day, so the account "
+                             "doesn't post at the exact same minute daily. 0 keeps the times exact.")
+        self.warm_up = QCheckBox("New account: warm up")
+        self.warm_up.setToolTip(f"For a TikTok account that's just been made: no posts for the first 3 days, "
+                                f"then 1 a day, then 2 a day in week two. Your own number starts after "
+                                f"{schedule.WARM_UP_DAYS} days.")
         grid = QGridLayout()
         grid.addWidget(label("Posts per day"), 0, 0)
         grid.addWidget(self.per_day, 0, 1)
@@ -232,9 +240,15 @@ class QueuePage(QWidget):
         grid.addWidget(self.first, 1, 1)
         grid.addWidget(label("Last post"), 1, 2)
         grid.addWidget(self.last, 1, 3)
+        grid.addWidget(label("Vary times"), 2, 0)
+        grid.addWidget(self.vary, 2, 1)
+        grid.addWidget(self.warm_up, 2, 2, 1, 2)
         sl.addLayout(grid)
         self.slots = label("", "muted", wrap=True)
         sl.addWidget(self.slots)
+        self.sched_notes = label("", wrap=True)
+        self.sched_notes.setStyleSheet(f"color: {theme.WARN};")
+        sl.addWidget(self.sched_notes)
         mode_row = QHBoxLayout()
         self.mode_title = label("Posting")
         mode_row.addWidget(self.mode_title)
@@ -245,8 +259,9 @@ class QueuePage(QWidget):
         self.next_label.setTextFormat(Qt.RichText)
         self.next_label.linkActivated.connect(lambda _href: self.ready_requested.emit())
         sl.addWidget(self.next_label)
-        for w in (self.per_day, self.gap):
+        for w in (self.per_day, self.gap, self.vary):
             w.valueChanged.connect(self._schedule_changed)
+        self.warm_up.toggled.connect(self._warm_up_toggled)
         for w in (self.first, self.last):
             w.timeChanged.connect(self._schedule_changed)
         lay.addWidget(sched)
@@ -288,11 +303,13 @@ class QueuePage(QWidget):
     def _load_schedule(self) -> None:
         """Show the shown account's schedule and posting mode (without saving them back)."""
         a = self.state.active
-        widgets = (self.per_day, self.gap, self.first, self.last)
+        widgets = (self.per_day, self.gap, self.vary, self.warm_up, self.first, self.last)
         for w in widgets:
             w.blockSignals(True)
         self.per_day.setValue(a.posts_per_day)
         self.gap.setValue(a.min_gap_minutes)
+        self.vary.setValue(a.vary_minutes)
+        self.warm_up.setChecked(schedule.warm_up_day(a.apply(self.state.settings), dt.date.today()) is not None)
         self.first.setTime(QTime.fromString(a.first_post_time, "HH:mm"))
         self.last.setTime(QTime.fromString(a.last_post_time, "HH:mm"))
         self.mode.set_value(a.mode)
@@ -369,8 +386,13 @@ class QueuePage(QWidget):
         s = self.state.settings
         reminders = not a.autopilot and s.remind_to_post  # Settings → Ready to upload can turn them off
         what = "reminder times" if reminders else "posting times"
-        self.slots.setText(f"Daily {what}: " + ", ".join(t.strftime("%H:%M")
-                                                        for t in schedule.daily_slots(self.state.settings_for())))
+        sa = self.state.settings_for()
+        vary = f", each moved by up to {sa.vary_minutes} min a day" if sa.vary_minutes else ""
+        self.slots.setText(f"Daily {what}: " + ", ".join(t.strftime("%H:%M") for t in schedule.daily_slots(sa))
+                           + vary)
+        notes = schedule.describe(sa, dt.date.today())
+        self.sched_notes.setText("\n".join(f"• {n}" for n in notes))
+        self.sched_notes.setVisible(bool(notes))
         q = [i for i in self.state.store.queue(a.id) if i.status == "queued" and i.planned_at]
         if not a.autopilot:
             nxt = f" Next: <b>{_esc(q[0].headline)}</b> at {schedule.fmt_when(q[0].planned_at)}." if q else ""
@@ -515,8 +537,19 @@ class QueuePage(QWidget):
         a = self.state.active
         a.posts_per_day = self.per_day.value()
         a.min_gap_minutes = self.gap.value()
+        a.vary_minutes = self.vary.value()
         a.first_post_time = self.first.time().toString("HH:mm")
         a.last_post_time = self.last.time().toString("HH:mm")
+        self.state.save_accounts()
+        self.refresh()
+
+    def _warm_up_toggled(self, on: bool) -> None:
+        """Start the shown account's warm-up, counted from when it was added if that was recent, or end it."""
+        a = self.state.active
+        if on:
+            a.start_warm_up()
+        else:
+            a.warm_up_start = 0.0
         self.state.save_accounts()
         self.refresh()
 

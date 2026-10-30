@@ -178,6 +178,11 @@ class SetupWizard(QDialog):
         self.times = label("", "muted")
         row.addWidget(self.times, 1)
         lay.addLayout(row)
+        self.warm_up = QCheckBox("This TikTok account is new: post less for its first two weeks")
+        self.warm_up.setToolTip("No posts for 3 days while you watch your niche on TikTok, then 1 a day, then 2 a day "
+                                "in week two. New accounts that post a lot straight away tend to get little reach.")
+        self.warm_up.setChecked(bool(a.warm_up_start))
+        lay.addWidget(self.warm_up)
         self.per_day.valueChanged.connect(self._show_times)
         current = self.state.settings.phone_folder
         self.phone_folder = Path(current) if current else phone.suggested_folder()
@@ -296,6 +301,10 @@ class SetupWizard(QDialog):
         if self.phone_folder is not None and self.mode() == "hand":  # autopilot: nothing goes to the phone anyway
             s.phone_folder = str(self.phone_folder) if self.use_phone.isChecked() else ""
         a.posts_per_day = self.per_day.value()
+        if self.warm_up.isChecked() and not a.warm_up_start:
+            a.start_warm_up()
+        elif not self.warm_up.isChecked():
+            a.warm_up_start = 0.0
         st.set_autopilot(a.id, self.mode() == "autopilot")
         s.setup_done = True
         if self.cm_folder is not None:  # asked here, so it isn't offered again by itself
