@@ -8,15 +8,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView,
                                QLineEdit, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
                                QTableWidgetItem, QTableWidgetSelectionRange, QVBoxLayout, QWidget)
 
-from .. import niches
 from ..jobs import analyze_item, ai_item
 from ..media import VIDEO_EXTS
 from ..store import VideoItem
-from . import theme
+from . import niche_menu, theme
 from .editor import PostEditor
 from .state import AppState, Job
 from .widgets import (ScoreBreakdown, ScorePillDelegate, ScoreRing, Thumb, badge_for, fmt_dur, label, panel,
@@ -429,37 +428,10 @@ class LibraryPage(QWidget):
 
     def _niche_menu(self, m: QMenu, items: list[VideoItem]) -> None:
         """Right-click → Niche: say which niche the selected videos are, when it was worked out wrong."""
-        index = self.state.niches()
-        now = {index.of(it) or niches.NONE for it in items}
-        for n in index.niches:
-            act = m.addAction(n.label, lambda name=n.name: self.set_niche(items, name))
-            act.setCheckable(True)
-            act.setChecked(now == {n.key})
-        if index.niches:
-            m.addSeparator()
-        m.addAction("New niche…", lambda: self.new_niche(items))
-        act = m.addAction("No niche", lambda: self.set_niche(items, niches.NONE))
-        act.setCheckable(True)
-        act.setChecked(now == {niches.NONE})
-        if any(it.niche_set for it in items):
-            m.addSeparator()
-            m.addAction("Work it out again", lambda: self.set_niche(items, ""))
-
-    def new_niche(self, items: list[VideoItem]) -> None:
-        name, ok = QInputDialog.getText(self, "New niche", "What are these videos? For example Gaming or Finance:")
-        if ok and niches.fold(name):
-            self.set_niche(items, name)
+        niche_menu.fill(m, self.state, items, self)
 
     def set_niche(self, items: list[VideoItem], name: str) -> None:
-        with self.state.store.lock:
-            changed = niches.set_niche(items, name)
-        if not changed:
-            return
-        what = ("worked out again" if not name else "set to no niche" if name == niches.NONE
-                else f"set to {' '.join(name.split())}")
-        self.state.log(f"Niche of {changed} video{'s' * (changed != 1)} {what}.")
-        self.state.save_soon()
-        self.state.library_changed.emit()
+        niche_menu.set_niche(self.state, items, name)
 
     # --- actions ------------------------------------------------------------------
 

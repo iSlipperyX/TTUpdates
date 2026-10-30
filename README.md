@@ -110,7 +110,8 @@ waiting), or all queued for one account.
   in their caption, which the licence requires. Tick **Write an AI caption** to have the AI write
   one for each new clip instead.
 - **Niches.** A clip from a ClipMonster niche whose account name matches one of your accounts'
-  usernames (with or without the @) is queued for that account, whatever the sharing rule says.
+  usernames (with or without the @) is queued for that account, whatever the sharing rule says, and
+  so is a clip in a niche that only one account has ticked under **Niches it posts** (see below).
 - **Part series.** ClipMonster's "Part 1 / 2 / 3" clips stay in order, and back to back, in the queue
   and on the Ready page, which shows "Part 2 of 3" on each.
 - ClipMonster's **Clean up** may delete clips you've already posted. Their stats and history are
@@ -163,9 +164,17 @@ With more than one account, each gets its own subfolder.
 When your clips cover more than one topic (ClipMonster's niches, like *Gaming Videos* and *Financial
 Advisor*), the **niche switcher** next to the account button shows one at a time. Pick **Gaming
 Videos** and the Library, Ready, Queue and Account pages show only gaming clips; **All niches** shows
-everything again. It only changes what you see: every queued video still posts at its time, and the
-phone folder keeps all of them. The menu counts each niche's videos, and the switcher only appears
-once the library has niches.
+everything again. The switcher only changes what you see. The menu counts each niche's videos, and
+the switcher only appears once the library has niches.
+
+What does decide posting is **Niches it posts**, under each account's schedule on the Queue page.
+Only queued videos tagged with one of its niches get a posting time; the rest stay in their place in
+the queue, marked "No posting time", and are never posted, reminded of or copied to the phone until
+they're tagged (or moved to an account that posts their niche). An account starts on **Every niche**,
+so only videos with no niche wait; tick niches by name to narrow it, or **Videos with no niche** to
+let those in too. The Queue and Ready pages count the videos on hold, and **Select them** on the Queue
+picks them out so you can tag them all at once (right-click → **Niche**). A library with no niches at
+all schedules everything, as before.
 
 - **Where a video's niche comes from**, first match wins: the niche you picked for it; ClipMonster's
   word (its clips.json, or the list of videos it picked), under the niche's current name; a folder

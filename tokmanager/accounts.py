@@ -74,6 +74,9 @@ class Account:
     default_privacy: str = "public"
     default_hashtags: str = "#fyp"
     niche: str = ""  # audience / topic, used by AI captions and ratings
+    # The niches its schedule posts (niches.py keys; niches.EVERY = any niche, niches.NONE = videos with no
+    # niche). Queued videos outside them wait in the queue without a posting time.
+    post_niches: list[str] = field(default_factory=lambda: ["*"])
     # Last check of TikTok's upload page (tiktok.check_upload): when, "ok" | "warn" | "fail", what it found
     upload_check_at: float = 0.0
     upload_check: str = ""
@@ -89,6 +92,9 @@ class Account:
     def __post_init__(self) -> None:
         self.browser_profile = self.browser_profile or f"browser-profiles/{self.id}"
         self.tokens_file = self.tokens_file or f"tokens/{self.id}.json"
+        wants = self.post_niches if isinstance(self.post_niches, list) else []
+        wants = list(dict.fromkeys(str(k) for k in wants if isinstance(k, str) and k))
+        self.post_niches = wants or ["*"]
 
     @property
     def label(self) -> str:
