@@ -11,7 +11,7 @@ from .vault import protect, unprotect
 
 APP_NAME = "TikTok Manager"
 APP_ID = "TikTokManager"
-VERSION = "1.8.0"
+VERSION = "1.10.0"
 
 
 def app_dir() -> Path:
