@@ -27,6 +27,8 @@ def setup(tmp_path, names=("alpha", "bravo", "charlie"), accounts=1):
     accs = Accounts.load(Settings())
     a = accs.items[0]
     a.username = "cats"
+    # The 3-a-day schedule these tests were written for, at exact times.
+    a.posts_per_day, a.first_post_time, a.min_gap_minutes, a.vary_minutes = 3, "09:00", 120, 0
     for n in range(1, accounts):
         accs.add(f"Account {n + 1}", copy_schedule_from=a)
     store = Store(tmp_path / "lib.json")

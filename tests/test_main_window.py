@@ -161,3 +161,25 @@ def test_the_account_page_compares_with_a_day_before(window):
     p.history = p.history[1:]
     w.account.refresh()
     assert w.account.c_followers.sub.text() == "+10 since 1 h ago"
+
+
+def test_the_queue_schedule_shows_what_really_fits_and_can_warm_up_a_new_account(window, tmp_path):
+    w = window(clips=clipmonster_folder(tmp_path))
+    q, a = w.queue, w.state.active
+    q.per_day.setValue(9)
+    q.gap.setValue(120)
+    q.first.setTime(q.first.time().fromString("09:00", "HH:mm"))
+    assert a.posts_per_day == 9
+    notes = q.sched_notes.text()
+    assert "Only 7 of 9 fit" in notes and "more than the 3" in notes and not q.sched_notes.isHidden()
+    assert "each moved by up to 15 min" in q.slots.text()
+    q.vary.setValue(0)
+    assert a.vary_minutes == 0 and "moved" not in q.slots.text()
+    q.warm_up.setChecked(True)
+    assert a.warm_up_start == a.created_at  # the account was just added, so today is day 1
+    assert "Warm-up day 1 of 14" in q.sched_notes.text()
+    q.warm_up.setChecked(False)
+    assert a.warm_up_start == 0.0 and "Warm-up" not in q.sched_notes.text()
+    q.per_day.setValue(2)
+    q.gap.setValue(180)
+    assert q.sched_notes.text() == "" and q.sched_notes.isHidden()
