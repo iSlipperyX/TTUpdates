@@ -1,5 +1,11 @@
 # TikTok Manager
 
+> **TikTok Manager is now part of ClipMonster.** From ClipMonster 3.0.0, posting, accounts, the queue,
+> stats and a record of every posted video are built into [ClipMonster](https://github.com/iSlipperyX/ClipMostr),
+> which posts by itself from its background automation. This repository is no longer developed and gets
+> no new releases. Install ClipMonster, add your accounts in its Accounts tab (or its first-run setup),
+> log in once, then uninstall TikTok Manager from Windows' Installed apps.
+
 A Windows desktop app that **scores your videos for TikTok**, lets you **put them in posting order**,
 **posts them on a schedule**, and **tracks how they do** on your account.
 
